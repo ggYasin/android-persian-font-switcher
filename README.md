@@ -43,7 +43,7 @@ IRANSans is not bundled. The supplied mirror's own README says rights must be ob
 
 ## Custom fonts
 
-KernelSU Next Manager v3.1.0+ exposes the standard Android document picker and a binary file-output bridge. rc3 feature-detects that API, accepts exactly one Regular and one Bold file (maximum 16 MiB each), validates both in the WebUI, streams them to a random fixed staging location, and lets a trusted module script revalidate token, path, size, SFNT magic, and hashes.
+KernelSU Next Manager v3.1.0+ exposes the standard Android document picker and a binary file-output bridge. rc4 feature-detects that API, accepts exactly one Regular and one Bold file (maximum 16 MiB each), validates both in the WebUI, streams them to a random fixed staging location, and lets a trusted module script revalidate token, path, size, SFNT magic, and hashes.
 
 Imported files are assigned a content-addressed `custom-…` ID and atomically persisted under:
 
@@ -51,7 +51,7 @@ Imported files are assigned a content-addressed `custom-…` ID and atomically p
 /data/adb/persian_font_switcher/custom-fonts/
 ```
 
-That module-owned data directory survives KernelSU's whole-directory module update replacement. `customize.sh` rebuilds read-only WebUI preview copies on every update. Display names and file-picker paths never enter a shell command. Custom files remain the user's licensing responsibility.
+That module-owned data directory survives KernelSU's whole-directory module update replacement. `customize.sh` rebuilds read-only WebUI preview copies on every update. Restoration is best-effort: absent data is a no-op, valid fonts are retained, stale locks are quarantined, and malformed, actively locked, or unreadable entries cannot fail module installation. Skipped originals stay in place; diagnostic names are recorded privately in `/data/adb/persian_font_switcher/quarantine/skipped-custom-data.log` when writable. Display names and file-picker paths never enter a shell command. Custom files remain the user's licensing responsibility.
 
 ## Why restart is required
 
@@ -93,7 +93,7 @@ Persian, Arabic, Urdu, and other languages sharing the Arabic-script fallback ma
 
 1. Disable/remove another module overlaying these targets, then reboot.
 2. Confirm a compatible KernelSU systemless mount provider is active.
-3. Install `Persian-Font-Switcher-v0.1.0-rc3.zip` from KernelSU Next Modules.
+3. Install `Persian-Font-Switcher-v0.1.0-rc4.zip` from KernelSU Next Modules.
 4. Reboot, open the module WebUI, search/preview, choose a font, and tap Apply selection.
 5. Reboot now or later when convenient.
 
@@ -106,15 +106,15 @@ To uninstall, disable/remove the module and reboot. Persistent custom originals 
 ```sh
 python3 -m pip install 'fonttools>=4.46,<5'
 ./scripts/build.sh
-./scripts/validate.sh ./Persian-Font-Switcher-v0.1.0-rc3.zip
+./scripts/validate.sh ./Persian-Font-Switcher-v0.1.0-rc4.zip
 ```
 
 Validation covers every bundled font's hashes, metadata, weight strategy, shaping tables and visible Persian coverage; licenses and provenance; real WebUI previews; JavaScript SFNT/cmap rejection tests; switching every family; active-versus-pending hashes; System Default; FontLoader states; custom import/corruption/persistence; attack inputs; deterministic ZIP layout; and the rc2 KernelSU `0644` extraction regression.
 
-The validated rc3 ZIP SHA-256 is:
+The validated rc4 ZIP SHA-256 is:
 
 ```text
-0de92ccbc00289aecdfcd58624f27a1288e033545f426815a7b037fac0afddfa
+f31421da4f68bc4c250a63326693e8f54ed8943cddda1a6f0d66889a07fb8520
 ```
 
 ## Security and credits

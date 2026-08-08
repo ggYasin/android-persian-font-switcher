@@ -93,9 +93,22 @@ set_perm "$MODPATH/customize.sh" 0 0 0755
 set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755
 
 # Recreate WebUI preview copies from the module-owned persistent custom-font
-# store. KernelSU replaces the module tree during updates, but not this store.
-PFS_MODULE_DIR="$MODPATH" PFS_DATA_DIR="$PFS_DATA_DIR" sh "$MODPATH/scripts/sync-custom.sh" >/dev/null 2>&1 || \
-  abort "Failed to restore persistent custom-font previews."
+# store. This is optional, best-effort update recovery: malformed/unreadable
+# data, a stale lock, or a transient copy error must not block a valid install.
+SYNC_LOG="$MODPATH/state/install-preview-sync.log"
+if PFS_MODULE_DIR="$MODPATH" PFS_DATA_DIR="$PFS_DATA_DIR" sh "$MODPATH/scripts/sync-custom.sh" >"$SYNC_LOG" 2>&1; then
+  SYNC_STATUS=0
+else
+  SYNC_STATUS=$?
+fi
+ui_print "Custom-font preview restore output (exit $SYNC_STATUS):"
+while IFS= read -r SYNC_LINE || [ -n "$SYNC_LINE" ]; do
+  ui_print "  $SYNC_LINE"
+done <"$SYNC_LOG"
+rm -f "$SYNC_LOG"
+if [ "$SYNC_STATUS" -ne 0 ]; then
+  ui_print "Warning: preview restoration failed unexpectedly; persistent custom data was left untouched and installation will continue."
+fi
 
 APPLY_LOG="$MODPATH/state/install-apply.log"
 if PFS_MODULE_DIR="$MODPATH" PFS_DATA_DIR="$PFS_DATA_DIR" PFS_SKIP_KSU_CONFIG=1 sh "$MODPATH/scripts/apply-font.sh" "$DESIRED_FONT" >"$APPLY_LOG" 2>&1; then

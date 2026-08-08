@@ -1,6 +1,6 @@
 {
   "schema": 2,
-  "projectVersion": "0.1.0-rc3",
+  "projectVersion": "0.1.0-rc4",
   "systemDefault": { "id": "system-default", "name": "System Default", "description": "Use the ROM's original Arabic-script fallback fonts." },
   "fonts": [
     { "id": "vazirmatn", "name": "Vazirmatn", "version": "33.003", "variant": "UI Non-Latin", "author": "Saber Rastikerdar / Vazirmatn Project Authors", "license": "OFL-1.1", "source": "https://github.com/rastikerdar/vazirmatn/releases/tag/v33.003", "archive": "vazirmatn-v33.003.zip", "archiveSha256": "0a9afd41967e6f57096a56a181a23f81a2b999b62f1f2a4e4b26736580854fdb", "description": "Clean, legible UI-oriented Persian/Arabic sans-serif using the official UI Non-Latin build.", "regular": "assets/fonts/vazirmatn/regular.ttf", "bold": "assets/fonts/vazirmatn/bold.ttf", "previewRegular": "fonts/vazirmatn/regular.ttf", "previewBold": "fonts/vazirmatn/bold.ttf", "licensePath": "assets/fonts/vazirmatn/LICENSE", "nonLatin": true, "sha256Regular": "99e8e85dc30507c90562c2967f1f2c29b64d45763d3807abe30fadf451bd64fc", "sha256Bold": "f93fe4bcf136cd1131a475813e0916657055ba745f66d28cff091016bb2e4454" },

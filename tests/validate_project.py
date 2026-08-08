@@ -127,8 +127,8 @@ def module_properties() -> None:
     expected = {
         "id": "persian_font_switcher",
         "name": "Persian Font Switcher",
-        "version": "0.1.0-rc3",
-        "versionCode": "102",
+        "version": "0.1.0-rc4",
+        "versionCode": "103",
         "author": "Yasin Fadaee",
     }
     for key, value in expected.items():
@@ -164,7 +164,7 @@ def validate_font(path: Path, expected_hash: str, expected_weight: int, non_lati
 
 def manifest_and_fonts() -> dict:
     manifest = json.loads(MANIFEST_PATH.read_text())
-    if manifest.get("schema") != 2 or manifest.get("projectVersion") != "0.1.0-rc3":
+    if manifest.get("schema") != 2 or manifest.get("projectVersion") != "0.1.0-rc4":
         fail("Unsupported manifest schema/version")
     if manifest.get("systemDefault", {}).get("id") != "system-default":
         fail("System Default manifest entry is missing")

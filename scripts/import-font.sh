@@ -100,7 +100,10 @@ case "$ACTION" in
     fi
     rm -rf "$BACKUP_DIR"
     chmod 0700 "$FINAL_DIR"
-    PFS_MODULE_DIR="$PFS_DIR" PFS_DATA_DIR="$PFS_DATA_DIR" sh "$PFS_DIR/scripts/sync-custom.sh" >/dev/null
+    # Persistence already succeeded. A preview-copy problem is recoverable and
+    # must not turn a licensed font import into an apparent data-loss failure.
+    PREVIEW_RESULT=$(PFS_MODULE_DIR="$PFS_DIR" PFS_DATA_DIR="$PFS_DATA_DIR" \
+      sh "$PFS_DIR/scripts/sync-custom.sh" 2>&1 || true)
 
     printf '%s\n' \
       "status=ok" \
@@ -108,7 +111,8 @@ case "$ACTION" in
       "name_b64=$NAME_B64" \
       "regular_sha256=$REGULAR_HASH" \
       "bold_sha256=$BOLD_HASH" \
-      "message=Custom font imported and persisted."
+      "message=Custom font imported and persisted. Preview synchronization is best-effort." \
+      "preview_result=$(printf '%s' "$PREVIEW_RESULT" | tr '\n' ';' | cut -c1-512)"
     ;;
   *) fail invalid-action "Unknown import action." ;;
 esac

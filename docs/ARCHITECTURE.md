@@ -38,7 +38,7 @@ KSU_MODULE=persian_font_switcher /data/adb/ksu/bin/ksud module config set select
 
 The module-local `state/selected-font` mirror supports status recovery if the config CLI is unavailable. Restart-required state is not a saved Boolean; it is recomputed by comparing the selected ID with effective mounted hashes.
 
-rc3 also derives restart state from reality: `get-status.sh` hashes both compact/elegant Regular and Bold targets in PID 1's mount namespace when possible, and matches the complete pair against bundled and persistent custom hashes. Saved selection is reported separately. Unknown effective hashes are never labeled as a known font.
+rc4 also derives restart state from reality: `get-status.sh` hashes both compact/elegant Regular and Bold targets in PID 1's mount namespace when possible, and matches the complete pair against bundled and persistent custom hashes. Saved selection is reported separately. Unknown effective hashes are never labeled as a known font.
 
 ## Custom import flow
 
@@ -54,11 +54,11 @@ user selects Regular + Bold through Android picker
     → rebuild read-only module-local WebUI preview copies
 ```
 
-KernelSU replaces the entire module directory on update. The separate module-owned persistent directory is therefore necessary for imported binaries; `customize.sh` recreates preview copies after each update. No chosen filename or display name is used as a path or shell argument.
+KernelSU replaces the entire module directory on update. The separate module-owned persistent directory is therefore necessary for imported binaries; `customize.sh` recreates preview copies after each update. Preview recovery is optional and non-fatal: no registry is a no-op, valid entries are copied, and invalid/unreadable entries remain untouched while a private quarantine diagnostic is written when possible. A stale synchronization lock is preserved under quarantine and repaired; a lock owned by a live process defers recovery instead of blocking installation, and the WebUI retries later. No chosen filename or display name is used as a path or shell argument.
 
 ## Restart model
 
-Applying changes only stages the next overlay atomically. Magic Mount-rs' live bind remains attached to the previous inode, and Android font maps are per-process/one-shot. rc3 intentionally provides Reboot now or Later, not SystemUI-only or zygote-only shortcuts. It never refreshes mounts itself or edits an external mount provider.
+Applying changes only stages the next overlay atomically. Magic Mount-rs' live bind remains attached to the previous inode, and Android font maps are per-process/one-shot. rc4 intentionally provides Reboot now or Later, not SystemUI-only or zygote-only shortcuts. It never refreshes mounts itself or edits an external mount provider.
 
 ## System Default
 

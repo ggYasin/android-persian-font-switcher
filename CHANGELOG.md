@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.0-rc4
+
+- Fixed rc3 installation failures caused by treating optional persistent custom-preview restoration as a fatal installer prerequisite.
+- Made a missing custom-font registry a clean no-op that does not create or lock external persistent storage.
+- Made stale locks, unsafe roots, malformed metadata, unreadable entries, and preview copy failures recoverable with installer-visible diagnostics.
+- Preserved unusable custom data in place and added a private `quarantine/skipped-custom-data.log` diagnostic instead of deleting user files.
+- Retained the rc2 explicit-shell/`0644` extraction fix and explicit final runtime script permissions.
+- Added installer regressions for absent, valid, corrupt, stale/locked, and unsafe persistent custom-font states.
+
 ## 0.1.0-rc3
 
 - Expanded the licensed bundled set from 3 to 13 families: Vazirmatn, Estedad, Sahel, Shabnam, Samim, Tanha, Gandom, Parastoo, Mikhak, Cairo, Noto Sans Arabic, Noto Kufi Arabic, and IBM Plex Sans Arabic.

@@ -89,10 +89,11 @@ mkdir -p "$UPDATED/scripts" "$UPDATED/webroot"
 cp "$PROJECT_DIR/scripts/lib.sh" "$PROJECT_DIR/scripts/sync-custom.sh" "$UPDATED/scripts/"
 cp "$PROJECT_DIR/webroot/font-manifest.json" "$UPDATED/webroot/"
 mkdir "$DATA/.preview-sync-lock"
-if PFS_MODULE_DIR="$UPDATED" PFS_DATA_DIR="$DATA" sh "$UPDATED/scripts/sync-custom.sh" >/dev/null 2>&1; then
-  echo "Concurrent custom-preview synchronization was accepted" >&2
-  exit 1
-fi
+printf '%s\n' "$$" >"$DATA/.preview-sync-lock/pid"
+BUSY_RESULT=$(PFS_MODULE_DIR="$UPDATED" PFS_DATA_DIR="$DATA" sh "$UPDATED/scripts/sync-custom.sh")
+printf '%s\n' "$BUSY_RESULT" | grep -q '^status=warning$'
+printf '%s\n' "$BUSY_RESULT" | grep -q '^code=preview-sync-busy$'
+rm "$DATA/.preview-sync-lock/pid"
 rmdir "$DATA/.preview-sync-lock"
 PFS_MODULE_DIR="$UPDATED" PFS_DATA_DIR="$DATA" sh "$UPDATED/scripts/sync-custom.sh" >/dev/null
 cmp "$CUSTOM_DIR/regular.ttf" "$UPDATED/webroot/custom-fonts/$CUSTOM_ID/regular.ttf"

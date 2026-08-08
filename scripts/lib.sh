@@ -31,7 +31,11 @@ pfs_manifest_record() {
 pfs_custom_dir() {
   PFS_CUSTOM_ID="$1"
   pfs_valid_id "$PFS_CUSTOM_ID" || return 1
+  [ "${#PFS_CUSTOM_ID}" -eq 31 ] || return 1
   case "$PFS_CUSTOM_ID" in custom-[0-9a-f]*) ;; *) return 1 ;; esac
+  PFS_CUSTOM_SUFFIX=${PFS_CUSTOM_ID#custom-}
+  [ "${#PFS_CUSTOM_SUFFIX}" -eq 24 ] || return 1
+  case "$PFS_CUSTOM_SUFFIX" in *[!0-9a-f]*) return 1 ;; esac
   printf '%s\n' "$PFS_CUSTOM_DIR/$PFS_CUSTOM_ID"
 }
 
@@ -44,12 +48,33 @@ pfs_read_hash_file() {
   printf '%s\n' "$PFS_STORED_HASH"
 }
 
+pfs_custom_font_file_valid() {
+  PFS_FONT_FILE="$1"
+  [ -f "$PFS_FONT_FILE" ] && [ ! -L "$PFS_FONT_FILE" ] || return 1
+  PFS_FONT_SIZE=$(wc -c <"$PFS_FONT_FILE" 2>/dev/null | tr -d ' ') || return 1
+  [ "$PFS_FONT_SIZE" -ge 256 ] && [ "$PFS_FONT_SIZE" -le 16777216 ] || return 1
+  PFS_FONT_MAGIC=$(od -An -tx1 -N4 "$PFS_FONT_FILE" 2>/dev/null | tr -d ' \n') || return 1
+  case "$PFS_FONT_MAGIC" in 00010000|4f54544f) return 0 ;; *) return 1 ;; esac
+}
+
+pfs_custom_name_valid() {
+  PFS_NAME_FILE="$1"
+  [ -s "$PFS_NAME_FILE" ] && [ ! -L "$PFS_NAME_FILE" ] || return 1
+  PFS_NAME_B64=$(tr -d '\n' <"$PFS_NAME_FILE" 2>/dev/null) || return 1
+  [ -n "$PFS_NAME_B64" ] && [ "${#PFS_NAME_B64}" -le 256 ] || return 1
+  case "$PFS_NAME_B64" in *[!A-Za-z0-9+/=]*) return 1 ;; esac
+  printf '%s' "$PFS_NAME_B64" | base64 -d >/dev/null 2>&1
+}
+
 pfs_custom_valid() {
   PFS_CUSTOM_CHECK_ID="$1"
   PFS_CUSTOM_CHECK_DIR=$(pfs_custom_dir "$PFS_CUSTOM_CHECK_ID") || return 1
-  [ -f "$PFS_CUSTOM_CHECK_DIR/regular.ttf" ] \
-    && [ -f "$PFS_CUSTOM_CHECK_DIR/bold.ttf" ] \
-    && [ -s "$PFS_CUSTOM_CHECK_DIR/name.b64" ] || return 1
+  [ ! -L "$PFS_CUSTOM_CHECK_DIR" ] || return 1
+  pfs_custom_font_file_valid "$PFS_CUSTOM_CHECK_DIR/regular.ttf" \
+    && pfs_custom_font_file_valid "$PFS_CUSTOM_CHECK_DIR/bold.ttf" \
+    && pfs_custom_name_valid "$PFS_CUSTOM_CHECK_DIR/name.b64" || return 1
+  [ ! -L "$PFS_CUSTOM_CHECK_DIR/regular.sha256" ] \
+    && [ ! -L "$PFS_CUSTOM_CHECK_DIR/bold.sha256" ] || return 1
   PFS_CUSTOM_REGULAR_HASH=$(pfs_read_hash_file "$PFS_CUSTOM_CHECK_DIR/regular.sha256") || return 1
   PFS_CUSTOM_BOLD_HASH=$(pfs_read_hash_file "$PFS_CUSTOM_CHECK_DIR/bold.sha256") || return 1
   [ "$(sha256sum "$PFS_CUSTOM_CHECK_DIR/regular.ttf" | awk '{print $1}')" = "$PFS_CUSTOM_REGULAR_HASH" ] \

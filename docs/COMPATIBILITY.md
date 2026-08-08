@@ -2,7 +2,7 @@
 
 ## Android layout
 
-Version 0.1.0-rc3 supports Android 12–16 / API 31–36 only when the ROM uses the complete AOSP Arabic fallback layout:
+Version 0.1.0-rc4 supports Android 12–16 / API 31–36 only when the ROM uses the complete AOSP Arabic fallback layout:
 
 | Variant | Weight | Filename |
 | --- | ---: | --- |
@@ -23,7 +23,7 @@ Installation requires all of the following:
 
 The installer rejects partial layouts. It does not infer support from Android version alone and does not claim generic Samsung, Xiaomi, or other vendor-ROM compatibility.
 
-The target is crDroid 12 / Android 16 on vayu. rc3 retains the tested rc2 explicit-shell installer fix for KernelSU's `0644` extraction behavior. All rc3 development and validation is off-device until the user explicitly installs the prerelease.
+The target is crDroid 12 / Android 16 on vayu. rc4 retains the tested rc2 explicit-shell installer fix for KernelSU's `0644` extraction behavior. It also makes optional custom-preview recovery non-fatal after rc3 failed during that step on the real device. All rc4 development and validation is off-device until the user explicitly installs the prerelease.
 
 ## Root manager and WebUI
 
@@ -37,7 +37,7 @@ KernelSU configurations need a compatible provider for module `system/` overlays
 
 Dynamic switching is designed for providers that inspect `/data/adb/modules/<id>/system` at boot. Current Magic Mount-rs follows this model and honors `skip_mount`, so it is a known compatible example.
 
-Some overlayfs metamodules copy module payloads into a separate provider-owned content directory during installation. Editing the original module directory later may not update their effective overlay. Version 0.1.0-rc3 does not write provider-owned paths, so post-install switching is not claimed for that design.
+Some overlayfs metamodules copy module payloads into a separate provider-owned content directory during installation. Editing the original module directory later may not update their effective overlay. Version 0.1.0-rc4 does not write provider-owned paths, so post-install switching is not claimed for that design.
 
 System Default uses KernelSU's standard `skip_mount` marker, which keeps the WebUI installed while telling compatible providers not to mount this module's `system/` payload.
 
@@ -45,11 +45,11 @@ The project does not store copies or trusted baselines of ROM fonts. Effective h
 
 ## Runtime refresh
 
-rc3 does not offer Restart SystemUI or soft Android restart. [Current Magic Mount-rs binds each boot-time source](https://github.com/Tools-cx-app/meta-magic_mount-rs/blob/dc7027b10a01edc5193b7837b9b55b807892d5bf/src/magic_mount/mod.rs#L91-L121) and exposes no supported live-remount command. Android's [`Typeface` system font map is set once per process](https://android.googlesource.com/platform/frameworks/base/+/android16-release/graphics/java/android/graphics/Typeface.java#1453), while [`SystemFonts` mmap font files](https://android.googlesource.com/platform/frameworks/base/+/android16-release/graphics/java/android/graphics/fonts/SystemFonts.java#118). A SystemUI restart cannot refresh existing apps, while a zygote restart remains disruptive and still does not replace the pinned mount. A normal reboot is the only supported provider-agnostic apply path.
+rc4 does not offer Restart SystemUI or soft Android restart. [Current Magic Mount-rs binds each boot-time source](https://github.com/Tools-cx-app/meta-magic_mount-rs/blob/dc7027b10a01edc5193b7837b9b55b807892d5bf/src/magic_mount/mod.rs#L91-L121) and exposes no supported live-remount command. Android's [`Typeface` system font map is set once per process](https://android.googlesource.com/platform/frameworks/base/+/android16-release/graphics/java/android/graphics/Typeface.java#1453), while [`SystemFonts` mmap font files](https://android.googlesource.com/platform/frameworks/base/+/android16-release/graphics/java/android/graphics/fonts/SystemFonts.java#118). A SystemUI restart cannot refresh existing apps, while a zygote restart remains disruptive and still does not replace the pinned mount. A normal reboot is the only supported provider-agnostic apply path.
 
 ## FontLoader
 
-The external FontLoader module uses ID `fontloader`. rc3 reports enabled, disabled, pending install/removal, or not detected by inspecting standard module markers. It does not install or change FontLoader. Individual app mount namespaces can still differ from the PID 1/global active state, which is exactly the Android 12+ lazy-loading case FontLoader is designed to mitigate.
+The external FontLoader module uses ID `fontloader`. rc4 reports enabled, disabled, pending install/removal, or not detected by inspecting standard module markers. It does not install or change FontLoader. Individual app mount namespaces can still differ from the PID 1/global active state, which is exactly the Android 12+ lazy-loading case FontLoader is designed to mitigate.
 
 ## App behavior
 
