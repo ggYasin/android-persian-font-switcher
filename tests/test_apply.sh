@@ -6,12 +6,13 @@ PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 SANDBOX=$(mktemp -d)
 trap 'rm -rf -- "$SANDBOX"' EXIT HUP INT TERM
 
-mkdir -p "$SANDBOX/scripts" "$SANDBOX/webroot" "$SANDBOX/state" "$SANDBOX/system/fonts"
+mkdir -p "$SANDBOX/scripts" "$SANDBOX/webroot" "$SANDBOX/state" "$SANDBOX/system/fonts" "$SANDBOX/effective" "$SANDBOX/adb/modules"
 cp -R "$PROJECT_DIR/assets" "$SANDBOX/assets"
 cp "$PROJECT_DIR/scripts/apply-font.sh" "$PROJECT_DIR/scripts/get-status.sh" "$PROJECT_DIR/scripts/lib.sh" "$SANDBOX/scripts/"
 cp "$PROJECT_DIR/webroot/font-manifest.json" "$SANDBOX/webroot/"
 cp "$PROJECT_DIR/state/supported-targets" "$PROJECT_DIR/state/selected-font" "$SANDBOX/state/"
 cp "$PROJECT_DIR/system/fonts/"*.ttf "$SANDBOX/system/fonts/"
+cp "$PROJECT_DIR/system/fonts/"*.ttf "$SANDBOX/effective/"
 
 apply() {
   PFS_MODULE_DIR="$SANDBOX" PFS_SKIP_KSU_CONFIG=1 sh "$SANDBOX/scripts/apply-font.sh" "$1"
@@ -26,10 +27,76 @@ assert_mapping() {
   [ ! -e "$SANDBOX/skip_mount" ]
 }
 
-for FONT_ID in vazirmatn estedad sahel; do
+for FONT_ID in $(sed -n 's/.*"id": "\([a-z0-9_-]*\)".*/\1/p' "$PROJECT_DIR/webroot/font-manifest.json"); do
+  [ "$FONT_ID" = system-default ] && continue
   apply "$FONT_ID" | grep -q '^status=ok$'
   assert_mapping "$FONT_ID"
 done
+
+# Effective mounted hashes, not saved config, determine active vs pending.
+apply vazirmatn >/dev/null
+cp "$SANDBOX/system/fonts/"*.ttf "$SANDBOX/effective/"
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^active=vazirmatn$'
+printf '%s\n' "$STATUS" | grep -q '^selected=vazirmatn$'
+printf '%s\n' "$STATUS" | grep -q '^restart_required=false$'
+printf '%s\n' "$STATUS" | grep -q '^fontloader=not-detected$'
+
+apply estedad >/dev/null
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^active=vazirmatn$'
+printf '%s\n' "$STATUS" | grep -q '^selected=estedad$'
+printf '%s\n' "$STATUS" | grep -q '^restart_required=true$'
+
+cp "$SANDBOX/system/fonts/"*.ttf "$SANDBOX/effective/"
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^active=estedad$'
+printf '%s\n' "$STATUS" | grep -q '^restart_required=false$'
+
+mkdir -p "$SANDBOX/adb/modules/fontloader"
+printf '%s\n' 'id=fontloader' >"$SANDBOX/adb/modules/fontloader/module.prop"
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^fontloader=enabled$'
+: >"$SANDBOX/adb/modules/fontloader/disable"
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^fontloader=disabled$'
+rm -f "$SANDBOX/adb/modules/fontloader/disable"
+: >"$SANDBOX/adb/modules/fontloader/remove"
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^fontloader=pending-removal$'
+rm -rf "$SANDBOX/adb/modules/fontloader"
+mkdir -p "$SANDBOX/adb/modules_update/fontloader"
+printf '%s\n' 'id=fontloader' >"$SANDBOX/adb/modules_update/fontloader/module.prop"
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^fontloader=pending-install$'
+mkdir -p "$SANDBOX/adb/modules/fontloader"
+printf '%s\n' 'id=fontloader' >"$SANDBOX/adb/modules/fontloader/module.prop"
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^fontloader=pending-install-or-update$'
+
+# A stale KernelSU config must not override the module state committed with the
+# current overlay when a best-effort config update previously failed.
+mkdir -p "$SANDBOX/adb/ksu/bin"
+printf '%s\n' '#!/usr/bin/env sh' 'printf "%s\n" vazirmatn' >"$SANDBOX/adb/ksu/bin/ksud"
+chmod 0755 "$SANDBOX/adb/ksu/bin/ksud"
+STATE_SELECTION=$(PFS_MODULE_DIR="$SANDBOX" PFS_ADB_ROOT="$SANDBOX/adb" \
+  sh -c '. "$1"; pfs_read_selection' sh "$SANDBOX/scripts/lib.sh")
+[ "$STATE_SELECTION" = estedad ]
+
+printf '%s\n' '#!/usr/bin/env sh' 'exit 1' >"$SANDBOX/failing-nsenter"
+chmod 0755 "$SANDBOX/failing-nsenter"
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_NSENTER_BIN="$SANDBOX/failing-nsenter" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^active=unknown$'
+printf '%s\n' "$STATUS" | grep -q '^active_scope=unavailable$'
 
 BEFORE=$(sha256sum "$SANDBOX/system/fonts/"*.ttf)
 if apply '../../escape' >/dev/null 2>&1; then
@@ -54,6 +121,19 @@ apply system-default | grep -q '^status=ok$'
 [ ! -d "$SANDBOX/system/fonts" ]
 [ "$(sed -n '1p' "$SANDBOX/state/selected-font")" = "system-default" ]
 
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^active=estedad$'
+printf '%s\n' "$STATUS" | grep -q '^selected=system-default$'
+printf '%s\n' "$STATUS" | grep -q '^restart_required=true$'
+
+for TARGET in "$SANDBOX/effective/"*.ttf; do printf '%s' rom-default >"$TARGET"; done
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+printf '%s\n' "$STATUS" | grep -q '^active=unknown$'
+printf '%s\n' "$STATUS" | grep -q '^selected=system-default$'
+printf '%s\n' "$STATUS" | grep -q '^restart_required=unknown$'
+
 apply estedad | grep -q '^status=ok$'
 assert_mapping estedad
 
@@ -71,7 +151,8 @@ if apply sahel >/dev/null 2>&1; then
 fi
 [ -e "$SANDBOX/skip_mount" ]
 
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" sh "$SANDBOX/scripts/get-status.sh")
+STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
+  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
 printf '%s\n' "$STATUS" | grep -q '^selected=system-default$'
 printf '%s\n' "$STATUS" | grep -q '^layout=valid$'
 

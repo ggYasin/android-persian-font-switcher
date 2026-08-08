@@ -2,54 +2,83 @@
 
 [![Validate module](https://github.com/ggYasin/android-persian-font-switcher/actions/workflows/validate.yml/badge.svg)](https://github.com/ggYasin/android-persian-font-switcher/actions/workflows/validate.yml)
 
-An open-source KernelSU Next module with an offline WebUI for choosing Android's Persian/Arabic-script fallback font while keeping the currently selected Latin `sans-serif` font.
+An open-source KernelSU Next module with an offline WebUI for choosing Android's Persian/Arabic-script fallback font while preserving the selected Latin `sans-serif` family.
 
-Install once, open the module's WebUI, preview a font, select it, and reboot. The module changes only four generated systemless-overlay files; it does not hook apps or rewrite the physical system partition.
+The module changes only the four known AOSP compact/elegant Arabic fallback paths. It has no daemon, service script, Zygisk component, font hook, network access, telemetry, or physical `/system` write.
 
-## Features
+## WebUI
 
-- Mobile-friendly offline KernelSU Next WebUI with real embedded font previews.
-- Vazirmatn, Estedad, and Sahel Regular/Bold choices.
-- Persian samples, ZWNJ/half-space words, Persian and Latin digits, and mixed-script previews.
-- System Default option that stops mounting the generated font overlay.
-- Strict manifest/ID allowlisting and pinned SHA-256 checks before every change.
-- Rollback-capable directory replacement with `skip_mount` as an interruption fail-safe.
-- Official KernelSU Next persistent module configuration, with a module-local fallback.
-- No CDN, network request, analytics, telemetry, daemon, Zygisk, LSPosed, SELinux policy, system property, or boot-time service.
+- Searchable list with real embedded Regular/Bold Persian previews.
+- Separate **Active** effective-mount state, **Selected** pending state, and restart-required status.
+- One explicit Apply button, System Default, Reboot now, and Later.
+- FontLoader enabled/disabled/pending/not-detected status.
+- Custom Regular+Bold import through KernelSU Next's Android file picker and root-backed binary stream.
+- Local SFNT structure, shaping-table, weight, size, and visible Persian glyph validation before import.
 
-The initial selection is Vazirmatn. Font changes officially take effect only after reboot; hot replacement is intentionally unsupported.
+The active font is derived from SHA-256 hashes of all four effective `/system/fonts` targets in PID 1's mount namespace when available. It is never inferred only from saved configuration. Because the project deliberately does not copy or pin a ROM's original proprietary/system font hashes, a System Default result may honestly appear as “System default or unrecognized.”
 
 ## Bundled fonts
 
-| Font | Version and variant | Upstream | Author/project | License |
-| --- | --- | --- | --- | --- |
-| Vazirmatn | 33.003, UI Non-Latin | [release](https://github.com/rastikerdar/vazirmatn/releases/tag/v33.003) | Saber Rastikerdar / Vazirmatn Project Authors | OFL-1.1 |
-| Estedad | 8.5, static upstream builds | [release](https://github.com/aminabedi68/Estedad/releases/tag/8.5) | Fontamin / Estedad Project Authors | OFL-1.1 |
-| Sahel | 3.4.0, Without Latin | [release](https://github.com/rastikerdar/sahel-font/releases/tag/v3.4.0) | Saber Rastikerdar | OFL-1.1; upstream Apache-2.0 notice retained |
+| Font | Version / variant | Author | License |
+| --- | --- | --- | --- |
+| Vazirmatn | 33.003 UI Non-Latin | Saber Rastikerdar / project authors | OFL-1.1 |
+| Estedad | 8.5 static | Amin Abedi / project authors | OFL-1.1 |
+| Sahel | 3.4.0 Without Latin | Saber Rastikerdar | OFL-1.1; retained Apache notice |
+| Shabnam | 5.0.1 Without Latin | Saber Rastikerdar | OFL-1.1; embedded upstream notices |
+| Samim | 4.0.5 Without Latin | Saber Rastikerdar | OFL-1.1; embedded upstream notices |
+| Tanha | 0.10 Without Latin | Saber Rastikerdar | Public-domain/Apache/Bitstream terms in upstream LICENSE |
+| Gandom | 0.8 Without Latin | Saber Rastikerdar | OFL-1.1; embedded upstream notices |
+| Parastoo | 2.0.1 Web Without Latin | Saber Rastikerdar | OFL-1.1 |
+| Mikhak | 3.4 static | Amin Abedi / project authors | OFL-1.1 |
+| Cairo | 3.116 static | Mohamed Gaber / project authors | OFL-1.1 |
+| Noto Sans Arabic | 2.013 unhinted static | Noto Project Authors | OFL-1.1 |
+| Noto Kufi Arabic | 2.110 unhinted static | Noto Project Authors | OFL-1.1 |
+| IBM Plex Sans Arabic | package 1.1.0 / font 1.005 | IBM / Bold Monday | OFL-1.1 |
 
-Vazirmatn and Sahel use their official non-Latin variants. Estedad does not publish an equivalent static non-Latin release, so this project keeps its official Regular/Bold binaries unchanged. Android resolves ordinary Latin through the primary selected sans-serif family before consulting the Arabic-script fallback; the module never replaces Roboto or another selected Latin family.
+Tanha and Gandom publish only one upstream weight. Their unchanged official Regular file is therefore used for both Android Regular and Bold targets; the WebUI and manifest disclose this limitation. Every other family has separate upstream Regular and Bold files.
 
-Exact file and source-archive hashes live in [`webroot/font-manifest.json`](webroot/font-manifest.json), and each font directory contains its upstream license. See [third-party notices](THIRD_PARTY_NOTICES.md) for provenance and the IRANSans exclusion.
+Pinned sources, archive/commit references, exact font SHA-256 values, variants, authors, and license paths are in [`webroot/font-manifest.json`](webroot/font-manifest.json). Every redistributed font license is bundled beside its files.
+
+IRANSans is not bundled. The supplied mirror's own README says rights must be obtained from FontIran, and the binaries identify FontIran/Moslem Ebrahimi with “All rights reserved.” A user who has a valid license may import their own Regular/Bold files locally; custom files are never committed, uploaded, or distributed by this project.
+
+## Custom fonts
+
+KernelSU Next Manager v3.1.0+ exposes the standard Android document picker and a binary file-output bridge. rc3 feature-detects that API, accepts exactly one Regular and one Bold file (maximum 16 MiB each), validates both in the WebUI, streams them to a random fixed staging location, and lets a trusted module script revalidate token, path, size, SFNT magic, and hashes.
+
+Imported files are assigned a content-addressed `custom-…` ID and atomically persisted under:
+
+```text
+/data/adb/persian_font_switcher/custom-fonts/
+```
+
+That module-owned data directory survives KernelSU's whole-directory module update replacement. `customize.sh` rebuilds read-only WebUI preview copies on every update. Display names and file-picker paths never enter a shell command. Custom files remain the user's licensing responsibility.
+
+## Why restart is required
+
+Applying a selection atomically prepares the module's next `system/fonts` overlay and saves the pending ID. It does not claim to change live processes.
+
+Magic Mount-rs binds the current source inode at boot. Replacing the module directory atomically does not retarget that live bind mount. Android also mmaps fonts and establishes a process-local system font map that cannot be replaced after initialization. Consequently:
+
+- restarting only SystemUI does not update existing apps and may still inherit old zygote font state;
+- a soft zygote restart without a supported provider remount still sees the old bind mount and is disruptive;
+- the module does not perform ad-hoc runtime bind mounts or alter provider configuration.
+
+The honest provider-agnostic choices are **Reboot now** or **Later**. Rebooting reruns the external mount provider before zygote, SystemUI, apps, and FontLoader initialize.
+
+## FontLoader
+
+[FontLoader](https://github.com/KernelSU-Modules-Repo/fontloader) remains a separate optional Zygisk module. It can be important on Android 12+ when an app later loses access to module font paths through mount-namespace hiding while fonts are lazily loaded. The WebUI detects module ID `fontloader` and reports enabled, disabled, pending install/removal, or not detected. Persian Font Switcher never installs, enables, disables, or configures it.
 
 ## Supported systems
 
-This release supports:
+- Android 12–16 / API 31–36.
+- A complete AOSP `und-Arab` compact/elegant four-file layout verified by the installer.
+- KernelSU Next Manager v3.1.0+ for custom import; v3.0.0+ remains sufficient for bundled selection/config persistence.
+- A compatible systemless mount provider that rereads the module's `system/` tree at boot. Magic Mount-rs is a known compatible provider.
 
-- Android 12–16 / API 31–36;
-- ROMs using the verified complete AOSP four-file `und-Arab` compact/elegant fallback layout;
-- the tested crDroid 12 / Android 16 layout;
-- KernelSU Next Manager v3.0.0 or newer for the persistent config backend (audited against v3.3.0 / build 33214);
-- a compatible systemless mount provider that re-reads the module's `system/` tree at boot.
+Vendor ROMs using different font configuration fail closed. The module never changes Magic Mount-rs configuration, KernelSU profiles, root hiding, integrity configuration, NeoZygisk, Vector, LSPosed, or TrickyStore.
 
-Magic Mount-style providers are the intended dynamic-switching architecture. Magic Mount-rs is one known compatible provider. The module does not require that specific provider, inspect its settings, or change `config.toml`.
-
-Some overlayfs metamodules copy module payloads to a separate content root only during installation. Post-install WebUI switching is not currently claimed for those providers. See [compatibility](docs/COMPATIBILITY.md) for the precise boundary.
-
-The installer checks the API, `/system/etc/fonts.xml`, the `und-Arab` family, and all four files before installing. A matching Android version alone is not sufficient, so vendor ROMs with a different layout fail safely.
-
-## Android files overlaid
-
-For a selected font, Regular and Bold are duplicated to:
+## Android targets
 
 ```text
 /system/fonts/NotoNaskhArabicUI-Regular.ttf
@@ -58,75 +87,38 @@ For a selected font, Regular and Bold are duplicated to:
 /system/fonts/NotoNaskhArabic-Bold.ttf
 ```
 
-These are Arabic-script fallbacks, so Persian, Arabic, Urdu, and other languages using the same fallback can all change. Apps, games, or web pages that explicitly bundle and select their own font can ignore Android's fallback.
+Persian, Arabic, Urdu, and other languages sharing the Arabic-script fallback may all change. Apps or web content explicitly selecting a bundled font can bypass Android's fallback.
 
 ## Install and use
 
-1. Remove or disable another font module that overlays the same targets, then reboot.
+1. Disable/remove another module overlaying these targets, then reboot.
 2. Confirm a compatible KernelSU systemless mount provider is active.
-3. Open KernelSU Next → Modules → Install from storage.
-4. Select `Persian-Font-Switcher-v0.1.0-rc2.zip` and reboot.
-5. Open Persian Font Switcher from the module card.
-6. Preview and select a font.
-7. Reboot when convenient.
+3. Install `Persian-Font-Switcher-v0.1.0-rc3.zip` from KernelSU Next Modules.
+4. Reboot, open the module WebUI, search/preview, choose a font, and tap Apply selection.
+5. Reboot now or later when convenient.
 
-The installer detects the legacy `vazirmatn_persian_fallback`, the archived `Vazirmatn-Regular` module, and any enabled module containing one of the four target files. Conflicts are reported but never removed or modified automatically.
+System Default creates the standard `skip_mount` marker and removes the generated overlay directory. The current mounted font remains active until reboot; afterward the ROM files are visible again.
 
-The WebUI never reboots the phone itself. KernelSU Next v3.3.0 has no dedicated documented WebUI reboot method, so the module only displays a reboot-required status.
-
-## System Default and uninstall
-
-System Default creates the standard module `skip_mount` marker, removes the four generated overlay files, preserves the WebUI, and saves `system-default`. After reboot, the ROM's original fonts are visible again.
-
-To uninstall completely, disable or remove Persian Font Switcher in the root manager and reboot.
-
-## Security model
-
-KernelSU Next's WebUI bridge can execute root commands, so this project treats the WebUI as privileged code:
-
-- `ksu.moduleInfo()` must return the exact module ID and path.
-- Only fixed module-local scripts can be executed.
-- A font ID must match a strict character pattern and the bundled manifest in JavaScript and shell.
-- Names, descriptions, paths, and arbitrary user text are never inserted into commands.
-- Font paths are canonical and hashes are checked again before copying.
-- A restrictive Content Security Policy permits only module-local scripts, styles, fonts, and manifest reads.
-- There are no remote links or requests inside the privileged WebUI.
-
-See [SECURITY.md](SECURITY.md) and [architecture](docs/ARCHITECTURE.md) for details.
+To uninstall, disable/remove the module and reboot. Persistent custom originals are intentionally retained for reinstall/update continuity; remove `/data/adb/persian_font_switcher` manually only if you also want to erase them.
 
 ## Build and validate
-
-Linux prerequisites:
-
-- POSIX shell and standard tools;
-- `zip`, `unzip`, `file`, and `sha256sum`;
-- Python 3 with `fonttools`;
-- Node.js is optional and enables an additional JavaScript syntax check.
 
 ```sh
 python3 -m pip install 'fonttools>=4.46,<5'
 ./scripts/build.sh
-./scripts/validate.sh ./Persian-Font-Switcher-v0.1.0-rc2.zip
+./scripts/validate.sh ./Persian-Font-Switcher-v0.1.0-rc3.zip
 ```
 
-The build is deterministic: it uses an explicit payload list, normalized permissions/timestamps, and no generated network dependencies. Validation checks the manifest, licenses, TTF metadata, Regular/Bold weight classes, shaping tables, Persian glyphs, ZWNJ, digits, checksums, preview identity, WebUI policy, shell/JS syntax, attack inputs, System Default, ZIP modes, exact root paths, and clean extraction. An installer regression test also forces extracted scripts to `0644`, runs the real `customize.sh` against isolated fake Android roots, verifies initial mapping, and checks final runtime modes are `0755`.
+Validation covers every bundled font's hashes, metadata, weight strategy, shaping tables and visible Persian coverage; licenses and provenance; real WebUI previews; JavaScript SFNT/cmap rejection tests; switching every family; active-versus-pending hashes; System Default; FontLoader states; custom import/corruption/persistence; attack inputs; deterministic ZIP layout; and the rc2 KernelSU `0644` extraction regression.
 
-The validated `v0.1.0-rc2` ZIP SHA-256 is:
+The validated rc3 ZIP SHA-256 is:
 
 ```text
-55f34bb23d37f8f3d6219f85194ea7aada3ef9ddbdc8a4e46cbd2bcb39445de1
+0de92ccbc00289aecdfcd58624f27a1288e033545f426815a7b037fac0afddfa
 ```
 
-## Contributing
+## Security and credits
 
-- To add a font, follow [Adding fonts](docs/ADDING_FONTS.md). Only official upstream files with clear redistribution rights are accepted.
-- To add another ROM mapping, provide upstream or device evidence for its active font configuration and extend capability checks rather than weakening them.
-- Do not submit commercial fonts, unlicensed mirrors, font hooks, remote WebUI dependencies, or code that changes root-hiding/integrity settings.
+See [SECURITY.md](SECURITY.md), [architecture](docs/ARCHITECTURE.md), [compatibility](docs/COMPATIBILITY.md), and [third-party notices](THIRD_PARTY_NOTICES.md).
 
-## History and credits
-
-Persian Font Switcher is authored and maintained by **Yasin Fadaee / [@ggYasin](https://github.com/ggYasin)**.
-
-The existing [`v33.003` release](https://github.com/ggYasin/android-persian-font-switcher/releases/tag/v33.003) is preserved as the historical Vazirmatn-only static module. Project versions from `0.1.0` onward use semantic versioning independently of bundled font versions.
-
-Thanks to Saber Rastikerdar, Fontamin, the Estedad and Vazirmatn project authors, their contributors, KernelSU Next, and systemless mount-provider maintainers.
+Persian Font Switcher is authored and maintained by **Yasin Fadaee / [@ggYasin](https://github.com/ggYasin)**. The historical [`v33.003`](https://github.com/ggYasin/android-persian-font-switcher/releases/tag/v33.003), [`v0.1.0-rc1`](https://github.com/ggYasin/android-persian-font-switcher/releases/tag/v0.1.0-rc1), and [`v0.1.0-rc2`](https://github.com/ggYasin/android-persian-font-switcher/releases/tag/v0.1.0-rc2) releases remain preserved.

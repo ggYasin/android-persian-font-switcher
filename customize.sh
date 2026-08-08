@@ -75,11 +75,15 @@ ui_print "Detected complete AOSP compact/elegant Arabic fallback layout."
 
 DESIRED_FONT="vazirmatn"
 KSU_CONFIG="$PFS_ADB_ROOT/ksu/bin/ksud"
+PFS_DATA_DIR="$PFS_ADB_ROOT/persian_font_switcher"
+PFS_MODULE_DIR="$MODPATH"
+export PFS_ADB_ROOT PFS_DATA_DIR PFS_MODULE_DIR
+. "$MODPATH/scripts/lib.sh"
 if [ -x "$KSU_CONFIG" ]; then
   SAVED_FONT=$(KSU_MODULE=persian_font_switcher "$KSU_CONFIG" module config get selected_font 2>/dev/null || true)
-  case "$SAVED_FONT" in
-    system-default|vazirmatn|estedad|sahel) DESIRED_FONT="$SAVED_FONT" ;;
-  esac
+  if pfs_valid_selection "$SAVED_FONT"; then
+    DESIRED_FONT="$SAVED_FONT"
+  fi
 fi
 
 # KernelSU Next may extract ordinary payload scripts as 0644 regardless of the
@@ -88,8 +92,13 @@ fi
 set_perm "$MODPATH/customize.sh" 0 0 0755
 set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755
 
+# Recreate WebUI preview copies from the module-owned persistent custom-font
+# store. KernelSU replaces the module tree during updates, but not this store.
+PFS_MODULE_DIR="$MODPATH" PFS_DATA_DIR="$PFS_DATA_DIR" sh "$MODPATH/scripts/sync-custom.sh" >/dev/null 2>&1 || \
+  abort "Failed to restore persistent custom-font previews."
+
 APPLY_LOG="$MODPATH/state/install-apply.log"
-if PFS_MODULE_DIR="$MODPATH" PFS_SKIP_KSU_CONFIG=1 sh "$MODPATH/scripts/apply-font.sh" "$DESIRED_FONT" >"$APPLY_LOG" 2>&1; then
+if PFS_MODULE_DIR="$MODPATH" PFS_DATA_DIR="$PFS_DATA_DIR" PFS_SKIP_KSU_CONFIG=1 sh "$MODPATH/scripts/apply-font.sh" "$DESIRED_FONT" >"$APPLY_LOG" 2>&1; then
   APPLY_STATUS=0
 else
   APPLY_STATUS=$?

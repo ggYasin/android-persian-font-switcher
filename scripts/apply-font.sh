@@ -47,27 +47,18 @@ mkdir -p "$STAGE_DIR/system/fonts"
 pfs_enable_skip_mount
 
 if [ "$FONT_ID" != "system-default" ]; then
-  RECORD=$(pfs_manifest_record "$FONT_ID")
-  REGULAR_REL=$(pfs_json_field "$RECORD" regular)
-  BOLD_REL=$(pfs_json_field "$RECORD" bold)
-  REGULAR_HASH=$(pfs_json_field "$RECORD" sha256Regular)
-  BOLD_HASH=$(pfs_json_field "$RECORD" sha256Bold)
-
-  if [ "$REGULAR_REL" != "assets/fonts/$FONT_ID/regular.ttf" ] \
-    || [ "$BOLD_REL" != "assets/fonts/$FONT_ID/bold.ttf" ]; then
-    printf '%s\n' "status=error" "code=unsafe-manifest-path" "message=Manifest font paths are not canonical."
+  if ! pfs_resolve_font "$FONT_ID"; then
+    printf '%s\n' "status=error" "code=font-resolution-failed" "message=The selected font could not be resolved safely."
     exit 5
   fi
 
-  REGULAR_SOURCE="$PFS_DIR/$REGULAR_REL"
-  BOLD_SOURCE="$PFS_DIR/$BOLD_REL"
-  if [ ! -f "$REGULAR_SOURCE" ] || [ ! -f "$BOLD_SOURCE" ]; then
+  if [ ! -f "$PFS_REGULAR_SOURCE" ] || [ ! -f "$PFS_BOLD_SOURCE" ]; then
     printf '%s\n' "status=error" "code=missing-font-asset" "message=The selected font assets are incomplete."
     exit 5
   fi
 
-  if [ "$(sha256sum "$REGULAR_SOURCE" | awk '{print $1}')" != "$REGULAR_HASH" ] \
-    || [ "$(sha256sum "$BOLD_SOURCE" | awk '{print $1}')" != "$BOLD_HASH" ]; then
+  if [ "$(sha256sum "$PFS_REGULAR_SOURCE" | awk '{print $1}')" != "$PFS_REGULAR_HASH" ] \
+    || [ "$(sha256sum "$PFS_BOLD_SOURCE" | awk '{print $1}')" != "$PFS_BOLD_HASH" ]; then
     printf '%s\n' "status=error" "code=font-checksum-mismatch" "message=The selected font failed integrity validation."
     exit 5
   fi
@@ -75,8 +66,8 @@ if [ "$FONT_ID" != "system-default" ]; then
   while IFS= read -r TARGET || [ -n "$TARGET" ]; do
     WEIGHT=$(pfs_target_weight "$TARGET")
     case "$WEIGHT" in
-      regular) SOURCE="$REGULAR_SOURCE" ;;
-      bold) SOURCE="$BOLD_SOURCE" ;;
+      regular) SOURCE="$PFS_REGULAR_SOURCE" ;;
+      bold) SOURCE="$PFS_BOLD_SOURCE" ;;
       *) exit 5 ;;
     esac
     cp "$SOURCE" "$STAGE_DIR/system/fonts/$TARGET"
@@ -104,7 +95,6 @@ if ! pfs_write_selection "$FONT_ID"; then
   exit 6
 fi
 
-pfs_mark_reboot_required
 if [ "$FONT_ID" != "system-default" ]; then
   rm -f "$PFS_DIR/skip_mount"
 fi
@@ -114,5 +104,5 @@ printf '%s\n' \
   "status=ok" \
   "selected=$FONT_ID" \
   "config_backend=$PFS_CONFIG_BACKEND" \
-  "reboot_required=true" \
-  "message=Font selected successfully. Reboot required to apply system-wide."
+  "restart_required=true" \
+  "message=Font selection staged successfully. Compare active and selected state to determine whether restart is required."

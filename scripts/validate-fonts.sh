@@ -4,7 +4,8 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/lib.sh"
 
-for FONT_ID in vazirmatn estedad sahel; do
+for FONT_ID in $(sed -n 's/.*"id": "\([a-z0-9_-]*\)".*/\1/p' "$PFS_MANIFEST"); do
+  [ "$FONT_ID" = system-default ] && continue
   RECORD=$(pfs_manifest_record "$FONT_ID")
   [ -n "$RECORD" ] || exit 1
   for WEIGHT in regular bold; do

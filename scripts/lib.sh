@@ -7,7 +7,11 @@ PFS_MANIFEST="$PFS_DIR/webroot/font-manifest.json"
 PFS_STATE_DIR="$PFS_DIR/state"
 PFS_STATE_FILE="$PFS_STATE_DIR/selected-font"
 PFS_TARGETS_FILE="$PFS_STATE_DIR/supported-targets"
-PFS_KSUD="/data/adb/ksu/bin/ksud"
+PFS_ADB_ROOT=${PFS_ADB_ROOT:-/data/adb}
+PFS_DATA_DIR=${PFS_DATA_DIR:-"$PFS_ADB_ROOT/persian_font_switcher"}
+PFS_CUSTOM_DIR="$PFS_DATA_DIR/custom-fonts"
+PFS_STAGING_DIR="$PFS_DATA_DIR/staging"
+PFS_KSUD="$PFS_ADB_ROOT/ksu/bin/ksud"
 
 pfs_valid_id() {
   PFS_CHECK_ID="$1"
@@ -24,6 +28,36 @@ pfs_manifest_record() {
   awk -v needle="\"id\": \"$PFS_LOOKUP_ID\"" 'index($0, needle) { print; exit }' "$PFS_MANIFEST"
 }
 
+pfs_custom_dir() {
+  PFS_CUSTOM_ID="$1"
+  pfs_valid_id "$PFS_CUSTOM_ID" || return 1
+  case "$PFS_CUSTOM_ID" in custom-[0-9a-f]*) ;; *) return 1 ;; esac
+  printf '%s\n' "$PFS_CUSTOM_DIR/$PFS_CUSTOM_ID"
+}
+
+pfs_read_hash_file() {
+  PFS_HASH_FILE="$1"
+  [ -f "$PFS_HASH_FILE" ] || return 1
+  IFS= read -r PFS_STORED_HASH <"$PFS_HASH_FILE" || return 1
+  [ "${#PFS_STORED_HASH}" -eq 64 ] || return 1
+  case "$PFS_STORED_HASH" in *[!0-9a-f]*) return 1 ;; esac
+  printf '%s\n' "$PFS_STORED_HASH"
+}
+
+pfs_custom_valid() {
+  PFS_CUSTOM_CHECK_ID="$1"
+  PFS_CUSTOM_CHECK_DIR=$(pfs_custom_dir "$PFS_CUSTOM_CHECK_ID") || return 1
+  [ -f "$PFS_CUSTOM_CHECK_DIR/regular.ttf" ] \
+    && [ -f "$PFS_CUSTOM_CHECK_DIR/bold.ttf" ] \
+    && [ -s "$PFS_CUSTOM_CHECK_DIR/name.b64" ] || return 1
+  PFS_CUSTOM_REGULAR_HASH=$(pfs_read_hash_file "$PFS_CUSTOM_CHECK_DIR/regular.sha256") || return 1
+  PFS_CUSTOM_BOLD_HASH=$(pfs_read_hash_file "$PFS_CUSTOM_CHECK_DIR/bold.sha256") || return 1
+  [ "$(sha256sum "$PFS_CUSTOM_CHECK_DIR/regular.ttf" | awk '{print $1}')" = "$PFS_CUSTOM_REGULAR_HASH" ] \
+    && [ "$(sha256sum "$PFS_CUSTOM_CHECK_DIR/bold.ttf" | awk '{print $1}')" = "$PFS_CUSTOM_BOLD_HASH" ] || return 1
+  PFS_EXPECTED_CUSTOM_ID="custom-$(printf '%s' "$PFS_CUSTOM_REGULAR_HASH" | cut -c1-12)$(printf '%s' "$PFS_CUSTOM_BOLD_HASH" | cut -c1-12)"
+  [ "$PFS_CUSTOM_CHECK_ID" = "$PFS_EXPECTED_CUSTOM_ID" ]
+}
+
 pfs_json_field() {
   PFS_RECORD="$1"
   PFS_FIELD="$2"
@@ -34,7 +68,31 @@ pfs_valid_selection() {
   PFS_SELECTION="$1"
   pfs_valid_id "$PFS_SELECTION" || return 1
   [ "$PFS_SELECTION" = "system-default" ] && return 0
-  [ -n "$(pfs_manifest_record "$PFS_SELECTION")" ]
+  [ -n "$(pfs_manifest_record "$PFS_SELECTION")" ] && return 0
+  pfs_custom_valid "$PFS_SELECTION"
+}
+
+pfs_resolve_font() {
+  PFS_RESOLVE_ID="$1"
+  PFS_RESOLVE_RECORD=$(pfs_manifest_record "$PFS_RESOLVE_ID")
+  if [ -n "$PFS_RESOLVE_RECORD" ]; then
+    PFS_REGULAR_REL=$(pfs_json_field "$PFS_RESOLVE_RECORD" regular)
+    PFS_BOLD_REL=$(pfs_json_field "$PFS_RESOLVE_RECORD" bold)
+    [ "$PFS_REGULAR_REL" = "assets/fonts/$PFS_RESOLVE_ID/regular.ttf" ] \
+      && [ "$PFS_BOLD_REL" = "assets/fonts/$PFS_RESOLVE_ID/bold.ttf" ] || return 1
+    PFS_REGULAR_SOURCE="$PFS_DIR/$PFS_REGULAR_REL"
+    PFS_BOLD_SOURCE="$PFS_DIR/$PFS_BOLD_REL"
+    PFS_REGULAR_HASH=$(pfs_json_field "$PFS_RESOLVE_RECORD" sha256Regular)
+    PFS_BOLD_HASH=$(pfs_json_field "$PFS_RESOLVE_RECORD" sha256Bold)
+    return 0
+  fi
+
+  pfs_custom_valid "$PFS_RESOLVE_ID" || return 1
+  PFS_RESOLVE_CUSTOM_DIR=$(pfs_custom_dir "$PFS_RESOLVE_ID") || return 1
+  PFS_REGULAR_SOURCE="$PFS_RESOLVE_CUSTOM_DIR/regular.ttf"
+  PFS_BOLD_SOURCE="$PFS_RESOLVE_CUSTOM_DIR/bold.ttf"
+  PFS_REGULAR_HASH=$(pfs_read_hash_file "$PFS_RESOLVE_CUSTOM_DIR/regular.sha256") || return 1
+  PFS_BOLD_HASH=$(pfs_read_hash_file "$PFS_RESOLVE_CUSTOM_DIR/bold.sha256") || return 1
 }
 
 pfs_allowed_target() {
@@ -82,18 +140,21 @@ pfs_read_selection() {
     return 0
   fi
 
-  if [ -x "$PFS_KSUD" ]; then
-    PFS_CONFIG_SELECTION=$(KSU_MODULE="$PFS_MODULE_ID" "$PFS_KSUD" module config get selected_font 2>/dev/null || true)
-    if pfs_valid_selection "$PFS_CONFIG_SELECTION"; then
-      printf '%s\n' "$PFS_CONFIG_SELECTION"
-      return 0
-    fi
-  fi
-
+  # The module file is updated atomically with the overlay and is authoritative
+  # at runtime. KernelSU config is a cross-update fallback only; it may be stale
+  # if a best-effort config write failed after the module state commit.
   if [ -f "$PFS_STATE_FILE" ]; then
     IFS= read -r PFS_FILE_SELECTION <"$PFS_STATE_FILE" || true
     if pfs_valid_selection "$PFS_FILE_SELECTION"; then
       printf '%s\n' "$PFS_FILE_SELECTION"
+      return 0
+    fi
+  fi
+
+  if [ -x "$PFS_KSUD" ]; then
+    PFS_CONFIG_SELECTION=$(KSU_MODULE="$PFS_MODULE_ID" "$PFS_KSUD" module config get selected_font 2>/dev/null || true)
+    if pfs_valid_selection "$PFS_CONFIG_SELECTION"; then
+      printf '%s\n' "$PFS_CONFIG_SELECTION"
       return 0
     fi
   fi
@@ -122,19 +183,4 @@ pfs_write_selection() {
       PFS_CONFIG_BACKEND="kernelsu-config"
     fi
   fi
-}
-
-pfs_mark_reboot_required() {
-  if [ "${PFS_SKIP_KSU_CONFIG:-0}" != "1" ] && [ -x "$PFS_KSUD" ]; then
-    KSU_MODULE="$PFS_MODULE_ID" "$PFS_KSUD" module config set --temp reboot_required true >/dev/null 2>&1 || true
-  fi
-}
-
-pfs_reboot_required() {
-  if [ -x "$PFS_KSUD" ]; then
-    PFS_REBOOT_VALUE=$(KSU_MODULE="$PFS_MODULE_ID" "$PFS_KSUD" module config get reboot_required 2>/dev/null || true)
-    [ "$PFS_REBOOT_VALUE" = "true" ] || [ "$PFS_REBOOT_VALUE" = "1" ]
-    return
-  fi
-  return 1
 }

@@ -18,14 +18,14 @@ jobs:
       - name: Build deterministic module ZIP
         run: ./scripts/build.sh
       - name: Validate project, scripts, fonts, WebUI, and ZIP
-        run: ./scripts/validate.sh ./Persian-Font-Switcher-v0.1.0-rc2.zip
+        run: ./scripts/validate.sh ./Persian-Font-Switcher-v0.1.0-rc3.zip
       - name: Write checksum
-        run: sha256sum Persian-Font-Switcher-v0.1.0-rc2.zip > Persian-Font-Switcher-v0.1.0-rc2.zip.sha256
+        run: sha256sum Persian-Font-Switcher-v0.1.0-rc3.zip > Persian-Font-Switcher-v0.1.0-rc3.zip.sha256
       - name: Upload validated build
         uses: actions/upload-artifact@v4
         with:
-          name: Persian-Font-Switcher-v0.1.0-rc2
+          name: Persian-Font-Switcher-v0.1.0-rc3
           path: |
-            Persian-Font-Switcher-v0.1.0-rc2.zip
-            Persian-Font-Switcher-v0.1.0-rc2.zip.sha256
+            Persian-Font-Switcher-v0.1.0-rc3.zip
+            Persian-Font-Switcher-v0.1.0-rc3.zip.sha256
           if-no-files-found: error

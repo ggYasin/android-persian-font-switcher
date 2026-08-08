@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="color-scheme" content="light dark">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' blob:; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>Persian Font Switcher</title>
     <link rel="stylesheet" href="/internal/colors.css">
     <link rel="stylesheet" href="/internal/insets.css">
@@ -17,37 +17,70 @@
         <div>
           <p class="eyebrow">KernelSU module</p>
           <h1>Persian Font Switcher</h1>
-          <p class="lede">Choose the Arabic-script fallback Android will use after your next reboot. Your selected Latin sans-serif font stays unchanged.</p>
+          <p class="lede">Choose Android's Persian/Arabic fallback while preserving the selected Latin sans-serif font.</p>
         </div>
       </header>
 
       <section class="status-panel" aria-live="polite">
-        <div>
-          <span class="status-label">Current selection</span>
-          <strong id="current-font">Loading…</strong>
-        </div>
-        <span id="reboot-badge" class="badge hidden">Reboot required</span>
+        <div class="status-item"><span>Active in global mount</span><strong id="active-font">Loading…</strong></div>
+        <div class="status-item"><span>Selected for restart</span><strong id="selected-font">Loading…</strong></div>
+        <div class="status-item"><span>FontLoader</span><strong id="fontloader-status">Checking…</strong></div>
+        <span id="restart-badge" class="badge hidden">Restart required</span>
       </section>
+      <p id="fontloader-guidance" class="fontloader-guidance"></p>
 
       <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
 
-      <section aria-labelledby="font-list-heading">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Available fonts</p>
-            <h2 id="font-list-heading">Preview and select</h2>
-          </div>
-          <span class="small-note">Changes apply after reboot</span>
+      <section class="controls" aria-labelledby="font-list-heading">
+        <div>
+          <p class="eyebrow">Available fonts</p>
+          <h2 id="font-list-heading">Preview and choose</h2>
         </div>
-        <div id="font-list" class="font-list" aria-busy="true"></div>
+        <label class="search-box">
+          <span class="sr-only">Search fonts</span>
+          <input id="font-search" type="search" placeholder="Search fonts or authors" autocomplete="off">
+        </label>
+      </section>
+
+      <div id="font-list" class="font-list" aria-busy="true"></div>
+
+      <section class="apply-bar" aria-live="polite">
+        <div><span class="status-label">Chosen</span><strong id="chosen-font">Loading…</strong></div>
+        <button id="apply-button" type="button" disabled>Apply selection</button>
+      </section>
+
+      <section id="restart-panel" class="action-panel hidden" aria-labelledby="restart-heading">
+        <div>
+          <h2 id="restart-heading">Restart required</h2>
+          <p>The mount provider must rebuild the four systemless font overlays before Android processes load their one-shot font maps. Restarting only SystemUI is not sufficient.</p>
+        </div>
+        <div class="button-row">
+          <button id="reboot-button" class="danger-button" type="button">Reboot now</button>
+          <button id="later-button" class="secondary-button" type="button">Later</button>
+        </div>
+      </section>
+
+      <section class="import-panel" aria-labelledby="import-heading">
+        <p class="eyebrow">Your fonts</p>
+        <h2 id="import-heading">Import a custom family</h2>
+        <p class="small-note">Choose licensed Regular and Bold TTF/OTF files. Files are validated locally and persist in the module-owned data directory across updates.</p>
+        <label>Display name<input id="custom-name" type="text" maxlength="60" placeholder="My Persian font"></label>
+        <div class="file-grid">
+          <label>Regular<input id="custom-regular" type="file" accept=".ttf,.otf,font/ttf,font/otf"></label>
+          <label>Bold<input id="custom-bold" type="file" accept=".ttf,.otf,font/ttf,font/otf"></label>
+        </div>
+        <div id="custom-preview" class="custom-preview hidden" dir="rtl">سلام، می‌روم خانه؛ برنامه‌نویسی ۱۲۳۴۵۶۷۸۹۰</div>
+        <button id="import-button" type="button">Validate and import</button>
+        <p id="import-support" class="small-note"></p>
       </section>
 
       <footer>
-        <p>No network access, telemetry, daemon, Zygisk, or live font hooks.</p>
+        <p>No network, telemetry, daemon, font hook, or physical system write.</p>
         <p>Persian Font Switcher · Yasin Fadaee / @ggYasin</p>
       </footer>
     </main>
 
+    <script src="font-validator.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>
