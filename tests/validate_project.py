@@ -82,8 +82,8 @@ def module_properties() -> None:
     expected = {
         "id": "persian_font_switcher",
         "name": "Persian Font Switcher",
-        "version": "0.1.0-rc1",
-        "versionCode": "100",
+        "version": "0.1.0-rc2",
+        "versionCode": "101",
         "author": "Yasin Fadaee",
     }
     for key, value in expected.items():
@@ -115,7 +115,7 @@ def validate_font(path: Path, expected_hash: str, weight: str, non_latin: bool) 
 
 def manifest_and_fonts() -> dict:
     manifest = json.loads(MANIFEST_PATH.read_text())
-    if manifest.get("schema") != 1 or manifest.get("projectVersion") != "0.1.0-rc1":
+    if manifest.get("schema") != 1 or manifest.get("projectVersion") != "0.1.0-rc2":
         fail("Unsupported manifest schema/version")
     if manifest.get("systemDefault", {}).get("id") != "system-default":
         fail("System Default manifest entry is missing")
@@ -179,7 +179,7 @@ def static_webui() -> None:
 
 
 def syntax_and_modes() -> None:
-    shell_files = [ROOT / "customize.sh", *sorted((ROOT / "scripts").glob("*.sh")), ROOT / "tests/test_apply.sh"]
+    shell_files = [ROOT / "customize.sh", *sorted((ROOT / "scripts").glob("*.sh")), *sorted((ROOT / "tests").glob("*.sh"))]
     for script in shell_files:
         subprocess.run(["sh", "-n", str(script)], check=True)
         if script.parent.name == "scripts" and script.name not in {"build.sh", "validate.sh"} and not os.access(script, os.X_OK):

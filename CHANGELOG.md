@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-rc2
+
+- Fixed initial installation under KernelSU Next, which normalizes ordinary extracted payload files to mode `0644` before sourcing `customize.sh`.
+- Made initial font preparation invoke `apply-font.sh` through an explicit shell, independent of ZIP executable-bit preservation.
+- Normalized runtime script permissions explicitly to `0755` before initialization and reasserted them afterward for WebUI execution.
+- Added installer output forwarding with the apply script's exit status, machine-readable error code, message, stdout, and stderr.
+- Added an extracted-payload regression test that forces scripts to `0644`, runs the actual installer, verifies the four Vazirmatn mappings and final `0755` modes, and exercises detailed checksum-failure diagnostics.
+
 ## 0.1.0-rc1
 
 - Renamed the project and module to Persian Font Switcher.

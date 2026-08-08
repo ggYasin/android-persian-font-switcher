@@ -2,7 +2,9 @@
 
 LEGACY_MODULE_ID="vazirmatn_persian_fallback"
 THIRD_PARTY_MODULE_ID="Vazirmatn-Regular"
-FONT_CONFIG="/system/etc/fonts.xml"
+PFS_SYSTEM_ROOT="${PFS_TEST_SYSTEM_ROOT:-/system}"
+PFS_ADB_ROOT="${PFS_TEST_ADB_ROOT:-/data/adb}"
+FONT_CONFIG="$PFS_SYSTEM_ROOT/etc/fonts.xml"
 DEVICE_API="${API:-$(getprop ro.build.version.sdk 2>/dev/null)}"
 
 check_conflict_dir() {
@@ -34,7 +36,7 @@ check_conflict_dir() {
   fi
 }
 
-for CONFLICT_ROOT in /data/adb/modules /data/adb/modules_update; do
+for CONFLICT_ROOT in "$PFS_ADB_ROOT/modules" "$PFS_ADB_ROOT/modules_update"; do
   for CONFLICT_DIR in "$CONFLICT_ROOT"/*; do
     check_conflict_dir "$CONFLICT_DIR"
   done
@@ -63,7 +65,7 @@ for FONT_NAME in \
   NotoNaskhArabic-Regular.ttf \
   NotoNaskhArabic-Bold.ttf
 do
-  if [ ! -f "/system/fonts/$FONT_NAME" ] || ! grep -q "$FONT_NAME" "$FONT_CONFIG"; then
+  if [ ! -f "$PFS_SYSTEM_ROOT/fonts/$FONT_NAME" ] || ! grep -q "$FONT_NAME" "$FONT_CONFIG"; then
     abort "Unsupported ROM font layout: expected active fallback is absent: $FONT_NAME"
   fi
   printf '%s\n' "$FONT_NAME" >>"$TARGETS_FILE"
@@ -72,7 +74,7 @@ done
 ui_print "Detected complete AOSP compact/elegant Arabic fallback layout."
 
 DESIRED_FONT="vazirmatn"
-KSU_CONFIG="/data/adb/ksu/bin/ksud"
+KSU_CONFIG="$PFS_ADB_ROOT/ksu/bin/ksud"
 if [ -x "$KSU_CONFIG" ]; then
   SAVED_FONT=$(KSU_MODULE=persian_font_switcher "$KSU_CONFIG" module config get selected_font 2>/dev/null || true)
   case "$SAVED_FONT" in
@@ -80,10 +82,31 @@ if [ -x "$KSU_CONFIG" ]; then
   esac
 fi
 
-if ! PFS_MODULE_DIR="$MODPATH" PFS_SKIP_KSU_CONFIG=1 "$MODPATH/scripts/apply-font.sh" "$DESIRED_FONT"; then
-  abort "Failed to prepare the initial '$DESIRED_FONT' fallback overlay."
+# KernelSU Next may extract ordinary payload scripts as 0644 regardless of the
+# ZIP's Unix mode. Normalize runtime modes now, but invoke the initial apply via
+# an explicit shell so installation never depends on extraction preserving +x.
+set_perm "$MODPATH/customize.sh" 0 0 0755
+set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755
+
+APPLY_LOG="$MODPATH/state/install-apply.log"
+if PFS_MODULE_DIR="$MODPATH" PFS_SKIP_KSU_CONFIG=1 sh "$MODPATH/scripts/apply-font.sh" "$DESIRED_FONT" >"$APPLY_LOG" 2>&1; then
+  APPLY_STATUS=0
+else
+  APPLY_STATUS=$?
 fi
 
+ui_print "Initial font apply output (exit $APPLY_STATUS):"
+while IFS= read -r APPLY_LINE || [ -n "$APPLY_LINE" ]; do
+  ui_print "  $APPLY_LINE"
+done <"$APPLY_LOG"
+rm -f "$APPLY_LOG"
+
+if [ "$APPLY_STATUS" -ne 0 ]; then
+  abort "Failed to prepare the initial '$DESIRED_FONT' fallback overlay (exit $APPLY_STATUS). See the apply output above."
+fi
+
+# Reassert final installed modes after initialization. WebUI calls these
+# scripts directly at runtime, so they must be executable in the installed tree.
 set_perm "$MODPATH/customize.sh" 0 0 0755
 set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755
 set_perm_recursive "$MODPATH/assets" 0 0 0755 0644

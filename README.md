@@ -65,7 +65,7 @@ These are Arabic-script fallbacks, so Persian, Arabic, Urdu, and other languages
 1. Remove or disable another font module that overlays the same targets, then reboot.
 2. Confirm a compatible KernelSU systemless mount provider is active.
 3. Open KernelSU Next → Modules → Install from storage.
-4. Select `Persian-Font-Switcher-v0.1.0-rc1.zip` and reboot.
+4. Select `Persian-Font-Switcher-v0.1.0-rc2.zip` and reboot.
 5. Open Persian Font Switcher from the module card.
 6. Preview and select a font.
 7. Reboot when convenient.
@@ -106,15 +106,15 @@ Linux prerequisites:
 ```sh
 python3 -m pip install 'fonttools>=4.46,<5'
 ./scripts/build.sh
-./scripts/validate.sh ./Persian-Font-Switcher-v0.1.0-rc1.zip
+./scripts/validate.sh ./Persian-Font-Switcher-v0.1.0-rc2.zip
 ```
 
-The build is deterministic: it uses an explicit payload list, normalized permissions/timestamps, and no generated network dependencies. Validation checks the manifest, licenses, TTF metadata, Regular/Bold weight classes, shaping tables, Persian glyphs, ZWNJ, digits, checksums, preview identity, WebUI policy, shell/JS syntax, attack inputs, System Default, ZIP modes, exact root paths, and clean extraction.
+The build is deterministic: it uses an explicit payload list, normalized permissions/timestamps, and no generated network dependencies. Validation checks the manifest, licenses, TTF metadata, Regular/Bold weight classes, shaping tables, Persian glyphs, ZWNJ, digits, checksums, preview identity, WebUI policy, shell/JS syntax, attack inputs, System Default, ZIP modes, exact root paths, and clean extraction. An installer regression test also forces extracted scripts to `0644`, runs the real `customize.sh` against isolated fake Android roots, verifies initial mapping, and checks final runtime modes are `0755`.
 
-The validated `v0.1.0-rc1` ZIP SHA-256 is:
+The validated `v0.1.0-rc2` ZIP SHA-256 is:
 
 ```text
-0c17b0d0e18bb58c09f2fd92b50e2044ae04e8a564026cf6e043b01a491e06d6
+55f34bb23d37f8f3d6219f85194ea7aada3ef9ddbdc8a4e46cbd2bcb39445de1
 ```
 
 ## Contributing

@@ -2,7 +2,7 @@
 
 ## Android layout
 
-Version 0.1.0-rc1 supports Android 12–16 / API 31–36 only when the ROM uses the complete AOSP Arabic fallback layout:
+Version 0.1.0-rc2 supports Android 12–16 / API 31–36 only when the ROM uses the complete AOSP Arabic fallback layout:
 
 | Variant | Weight | Filename |
 | --- | ---: | --- |
@@ -23,7 +23,7 @@ Installation requires all of the following:
 
 The installer rejects partial layouts. It does not infer support from Android version alone and does not claim generic Samsung, Xiaomi, or other vendor-ROM compatibility.
 
-The target is crDroid 12 / Android 16 on vayu. No device installation was performed while developing 0.1.0-rc1.
+The target is crDroid 12 / Android 16 on vayu. The first 0.1.0-rc1 installation reached and passed layout detection, then exposed an installer permission-ordering bug. Version 0.1.0-rc2 fixes that bug and is validated off-device; a successful rc2 installation still requires explicit device retesting.
 
 ## Root manager and WebUI
 
@@ -37,7 +37,7 @@ KernelSU configurations need a compatible provider for module `system/` overlays
 
 Dynamic switching is designed for providers that inspect `/data/adb/modules/<id>/system` at boot. Current Magic Mount-rs follows this model and honors `skip_mount`, so it is a known compatible example.
 
-Some overlayfs metamodules copy module payloads into a separate provider-owned content directory during installation. Editing the original module directory later may not update their effective overlay. Version 0.1.0-rc1 does not write provider-owned paths, so post-install switching is not claimed for that design.
+Some overlayfs metamodules copy module payloads into a separate provider-owned content directory during installation. Editing the original module directory later may not update their effective overlay. Version 0.1.0-rc2 does not write provider-owned paths, so post-install switching is not claimed for that design.
 
 System Default uses KernelSU's standard `skip_mount` marker, which keeps the WebUI installed while telling compatible providers not to mount this module's `system/` payload.
 

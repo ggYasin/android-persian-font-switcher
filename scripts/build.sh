@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-OUTPUT=${1:-"$PROJECT_DIR/Persian-Font-Switcher-v0.1.0-rc1.zip"}
+OUTPUT=${1:-"$PROJECT_DIR/Persian-Font-Switcher-v0.1.0-rc2.zip"}
 FILE_LIST="$PROJECT_DIR/scripts/payload-files.txt"
 STAGE=$(mktemp -d)
 trap 'rm -rf -- "$STAGE"' EXIT HUP INT TERM
