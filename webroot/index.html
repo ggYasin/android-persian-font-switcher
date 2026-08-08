@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>Persian Font Switcher</title>
+    <link rel="stylesheet" href="/internal/colors.css">
+    <link rel="stylesheet" href="/internal/insets.css">
+    <link rel="stylesheet" href="style.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="hero-mark" aria-hidden="true">ف</div>
+        <div>
+          <p class="eyebrow">KernelSU module</p>
+          <h1>Persian Font Switcher</h1>
+          <p class="lede">Choose the Arabic-script fallback Android will use after your next reboot. Your selected Latin sans-serif font stays unchanged.</p>
+        </div>
+      </header>
+
+      <section class="status-panel" aria-live="polite">
+        <div>
+          <span class="status-label">Current selection</span>
+          <strong id="current-font">Loading…</strong>
+        </div>
+        <span id="reboot-badge" class="badge hidden">Reboot required</span>
+      </section>
+
+      <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+
+      <section aria-labelledby="font-list-heading">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Available fonts</p>
+            <h2 id="font-list-heading">Preview and select</h2>
+          </div>
+          <span class="small-note">Changes apply after reboot</span>
+        </div>
+        <div id="font-list" class="font-list" aria-busy="true"></div>
+      </section>
+
+      <footer>
+        <p>No network access, telemetry, daemon, Zygisk, or live font hooks.</p>
+        <p>Persian Font Switcher · Yasin Fadaee / @ggYasin</p>
+      </footer>
+    </main>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
