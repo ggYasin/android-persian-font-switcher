@@ -1,0 +1,25 @@
+name: Validate module
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build module ZIP
+        run: ./scripts/build.sh
+      - name: Validate module ZIP
+        run: ./scripts/validate.sh
+      - name: Upload validated ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vazirmatn-Persian-Fallback-v33.003
+          path: Vazirmatn-Persian-Fallback-v33.003.zip
+          if-no-files-found: error

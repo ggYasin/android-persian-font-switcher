@@ -1,0 +1,6 @@
+id=vazirmatn_persian_fallback
+name=Vazirmatn Persian Fallback
+version=33.003
+versionCode=33003
+author=Yasin Fadaee; Vazirmatn by Saber Rastikerdar
+description=Replaces Android Arabic-script compact and elegant fallback fonts with Vazirmatn UI Non-Latin while preserving the selected Latin sans-serif font.
