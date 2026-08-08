@@ -122,8 +122,17 @@ a {
 
 .shell {
   width: min(100%, 760px);
+  min-width: 0;
   margin: 0 auto;
   padding: 28px 18px calc(36px + env(safe-area-inset-bottom));
+}
+
+.hero > div,
+.card-header > div,
+.font-list,
+.font-card,
+.previews {
+  min-width: 0;
 }
 
 .hero {
@@ -277,6 +286,7 @@ footer {
   color: var(--muted);
   font-size: 0.78rem;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .font-description {

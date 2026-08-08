@@ -25,4 +25,3 @@ printf '%s\n' \
   "reboot_required=$REBOOT_REQUIRED" \
   "layout=$LAYOUT" \
   "targets=$TARGETS"
-

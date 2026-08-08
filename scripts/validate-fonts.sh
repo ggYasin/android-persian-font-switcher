@@ -22,4 +22,3 @@ for FONT_ID in vazirmatn estedad sahel; do
 done
 
 printf '%s\n' "status=ok" "message=All bundled font checksums are valid."
-

@@ -3,32 +3,32 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-OUTPUT=${1:-"$PROJECT_DIR/Vazirmatn-Persian-Fallback-v33.003.zip"}
+OUTPUT=${1:-"$PROJECT_DIR/Persian-Font-Switcher-v0.1.0-rc1.zip"}
+FILE_LIST="$PROJECT_DIR/scripts/payload-files.txt"
 STAGE=$(mktemp -d)
 trap 'rm -rf -- "$STAGE"' EXIT HUP INT TERM
 
-mkdir -p "$STAGE/system/fonts"
-cp "$PROJECT_DIR/module.prop" "$STAGE/module.prop"
-cp "$PROJECT_DIR/customize.sh" "$STAGE/customize.sh"
-cp "$PROJECT_DIR/system/fonts/NotoNaskhArabicUI-Regular.ttf" "$STAGE/system/fonts/NotoNaskhArabicUI-Regular.ttf"
-cp "$PROJECT_DIR/system/fonts/NotoNaskhArabicUI-Bold.ttf" "$STAGE/system/fonts/NotoNaskhArabicUI-Bold.ttf"
-cp "$PROJECT_DIR/system/fonts/NotoNaskhArabic-Regular.ttf" "$STAGE/system/fonts/NotoNaskhArabic-Regular.ttf"
-cp "$PROJECT_DIR/system/fonts/NotoNaskhArabic-Bold.ttf" "$STAGE/system/fonts/NotoNaskhArabic-Bold.ttf"
+python3 "$PROJECT_DIR/tests/validate_project.py" --source-only
 
-chmod 0644 "$STAGE/module.prop" "$STAGE/system/fonts/"*.ttf
-chmod 0755 "$STAGE/customize.sh"
-touch -t 202401010000 "$STAGE/module.prop" "$STAGE/customize.sh" "$STAGE/system/fonts/"*.ttf
+while IFS= read -r RELATIVE || [ -n "$RELATIVE" ]; do
+  case "$RELATIVE" in
+    ''|'#'*) continue ;;
+    /*|*'..'*) echo "Unsafe payload path: $RELATIVE" >&2; exit 1 ;;
+  esac
+  mkdir -p "$STAGE/$(dirname -- "$RELATIVE")"
+  cp "$PROJECT_DIR/$RELATIVE" "$STAGE/$RELATIVE"
+done <"$FILE_LIST"
+
+find "$STAGE" -type d -exec chmod 0755 {} +
+find "$STAGE" -type f -exec chmod 0644 {} +
+chmod 0755 "$STAGE/customize.sh" "$STAGE/scripts/"*.sh
+chmod 0600 "$STAGE/state/"*
+find "$STAGE" -exec touch -t 202401010000 {} +
 
 rm -f -- "$OUTPUT"
 (
   cd "$STAGE"
-  zip -X -9 "$OUTPUT" \
-    module.prop \
-    customize.sh \
-    system/fonts/NotoNaskhArabicUI-Regular.ttf \
-    system/fonts/NotoNaskhArabicUI-Bold.ttf \
-    system/fonts/NotoNaskhArabic-Regular.ttf \
-    system/fonts/NotoNaskhArabic-Bold.ttf
+  LC_ALL=C sort "$FILE_LIST" | sed '/^[[:space:]]*$/d; /^[[:space:]]*#/d' | zip -X -9 "$OUTPUT" -@
 )
 
 sha256sum "$OUTPUT"
