@@ -1,0 +1,39 @@
+name: Bundled font proposal
+description: Propose a legally redistributable Persian/Arabic font family.
+title: "[Font]: "
+labels: [font]
+body:
+  - type: input
+    id: family
+    attributes:
+      label: Font family and version
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Official pinned release or commit URL
+    validations:
+      required: true
+  - type: input
+    id: license
+    attributes:
+      label: Redistribution license and official license URL
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Exact Regular/Bold variants and Persian coverage
+      description: Do not attach font binaries. Describe whether the files are static, non-Latin/UI variants, and true 400/700 weights.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: I read docs/ADDING_FONTS.md and confirmed public redistribution is permitted.
+          required: true
+        - label: I have not attached commercial, proprietary, APK-extracted, or personally licensed files.
+          required: true

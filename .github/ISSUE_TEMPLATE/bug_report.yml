@@ -1,0 +1,76 @@
+name: Bug or device compatibility report
+description: Report an installation, switching, WebUI, or ROM compatibility problem.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach proprietary fonts, root tokens, device serials, or other secrets. Security issues belong in the private advisory form.
+  - type: input
+    id: module_version
+    attributes:
+      label: Module version
+      placeholder: 0.2.0-rc1
+    validations:
+      required: true
+  - type: input
+    id: device_rom
+    attributes:
+      label: Device codename and exact ROM build
+      placeholder: vayu; crDroid 12 build YYYY-MM-DD
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android version and API
+      placeholder: Android 16 / API 36
+    validations:
+      required: true
+  - type: input
+    id: kernelsu
+    attributes:
+      label: KernelSU Next Manager and kernel/userspace versions
+    validations:
+      required: true
+  - type: input
+    id: mount_provider
+    attributes:
+      label: Systemless mount provider and version
+    validations:
+      required: true
+  - type: dropdown
+    id: fontloader
+    attributes:
+      label: FontLoader state
+      options: [Enabled, Disabled, Pending install/removal, Not installed, Unknown]
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: WebUI status and installer output
+      description: Include Active, Selected, ROM layout, exact error, and whether this was a clean install or update.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I read docs/REQUIREMENTS.md and rebooted after disabling conflicting font modules.
+          required: true
+        - label: I removed secrets and did not attach proprietary font binaries.
+          required: true

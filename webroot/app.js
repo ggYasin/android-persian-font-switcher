@@ -7,22 +7,39 @@ const SAFE_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const SAFE_TOKEN = /^[0-9a-f]{32}$/;
 const SCRIPT_NAMES = new Set([
   "apply-font.sh",
+  "delete-custom-font.sh",
   "get-status.sh",
   "import-font.sh",
   "list-custom-fonts.sh",
   "reboot-device.sh",
 ]);
 const MAX_FONT_SIZE = 16 * 1024 * 1024;
+/* KernelSU's Java bridge call itself is synchronous. This timer starts only
+ * after that call returns, so it detects a missing/late callback without
+ * racing a legitimate long-running root operation. It cannot preempt a root
+ * command that blocks inside the bridge. */
+const CALLBACK_DELIVERY_WATCHDOG_MS = 15000;
 
 let manifest;
 let customFonts = [];
 let activeId = "unknown";
 let selectedId = "system-default";
 let chosenId = "system-default";
+let restartState = "unknown";
 let operationPending = false;
+let initialized = false;
+let coreReady = false;
+let layoutValid = false;
+let importSupported = false;
+let customRegistryReady = false;
 let callbackSequence = 0;
-const loadedFamilies = new Set();
+let previewSequence = 0;
+let transientFontSequence = 0;
+const loadedFamilies = new Map();
+const loadingFamilies = new Map();
 let importPreviewFaces = [];
+let validatedImportPair = null;
+let previewObserver;
 
 const elements = {
   activeFont: document.querySelector("#active-font"),
@@ -30,11 +47,16 @@ const elements = {
   chosenFont: document.querySelector("#chosen-font"),
   fontloaderStatus: document.querySelector("#fontloader-status"),
   fontloaderGuidance: document.querySelector("#fontloader-guidance"),
+  layoutStatus: document.querySelector("#layout-status"),
   restartBadge: document.querySelector("#restart-badge"),
   restartPanel: document.querySelector("#restart-panel"),
   notice: document.querySelector("#notice"),
+  errorNotice: document.querySelector("#error-notice"),
   fontList: document.querySelector("#font-list"),
   search: document.querySelector("#font-search"),
+  resultCount: document.querySelector("#result-count"),
+  emptyState: document.querySelector("#empty-state"),
+  refreshButton: document.querySelector("#refresh-button"),
   applyButton: document.querySelector("#apply-button"),
   rebootButton: document.querySelector("#reboot-button"),
   laterButton: document.querySelector("#later-button"),
@@ -87,9 +109,32 @@ function verifyBridge() {
   }
 }
 
+function supportsCustomImport() {
+  return typeof window.ksu?.fileOutputStream === "function"
+    && typeof window.crypto?.getRandomValues === "function"
+    && typeof window.crypto?.subtle?.digest === "function"
+    && typeof File !== "undefined"
+    && typeof File.prototype.arrayBuffer === "function"
+    && typeof URL !== "undefined"
+    && typeof URL.createObjectURL === "function"
+    && typeof URL.revokeObjectURL === "function"
+    && typeof TextEncoder === "function"
+    && typeof TextDecoder === "function"
+    && typeof FontFace === "function"
+    && Boolean(document.fonts)
+    && typeof window.PfsFontValidator?.validate === "function";
+}
+
 function validateScriptArgs(scriptName, args) {
   if (!SCRIPT_NAMES.has(scriptName)) return false;
-  if (scriptName === "apply-font.sh") return args.length === 1 && SAFE_ID.test(args[0]) && Boolean(optionFor(args[0]));
+  if (scriptName === "apply-font.sh") {
+    const font = args.length === 1 && SAFE_ID.test(args[0]) ? optionFor(args[0]) : null;
+    return Boolean(font && (!font.custom || customRegistryReady));
+  }
+  if (scriptName === "delete-custom-font.sh") {
+    const font = args.length === 1 && SAFE_ID.test(args[0]) ? optionFor(args[0]) : null;
+    return Boolean(customRegistryReady && font?.custom);
+  }
   if (scriptName === "import-font.sh") {
     return args.length === 2 && new Set(["begin", "finish", "cancel"]).has(args[0]) && SAFE_TOKEN.test(args[1]);
   }
@@ -102,17 +147,40 @@ function execModuleScript(scriptName, args = []) {
   const callbackName = `pfsCallback${++callbackSequence}`;
   const options = JSON.stringify({ cwd: MODULE_DIR, env: { KSU_MODULE: MODULE_ID } });
   return new Promise((resolve, reject) => {
-    window[callbackName] = (exitCode, stdout, stderr) => {
+    let settled = false;
+    let timeout;
+    const finish = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      if (timeout !== undefined) clearTimeout(timeout);
       delete window[callbackName];
-      if (exitCode === 0) resolve(stdout);
-      else reject(new Error(stderr || stdout || `Command failed (${exitCode}).`));
+      handler(value);
     };
-    try {
-      window.ksu.exec(command, options, callbackName);
-    } catch (error) {
-      delete window[callbackName];
-      reject(error);
-    }
+    window[callbackName] = (exitCode, stdout, stderr) => {
+      if (exitCode === 0) finish(resolve, stdout);
+      else {
+        const result = parseResult(stdout || "");
+        const error = new Error(result.message || stderr || stdout || `Command failed (${exitCode}).`);
+        error.code = result.code || "command-failed";
+        finish(reject, error);
+      }
+    };
+    /* Give disabled controls and progress text one frame to paint before the
+     * synchronous Java bridge blocks the WebView on the root command. */
+    window.requestAnimationFrame(() => {
+      try {
+        window.ksu.exec(command, options, callbackName);
+        if (!settled) {
+          timeout = setTimeout(() => {
+            const error = new Error("The root command returned, but KernelSU did not deliver its callback. The outcome is unknown; refresh status before retrying.");
+            error.code = "bridge-timeout";
+            finish(reject, error);
+          }, CALLBACK_DELIVERY_WATCHDOG_MS);
+        }
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
   });
 }
 
@@ -131,67 +199,144 @@ function decodeBase64Utf8(value) {
 }
 
 async function loadCustomFonts() {
-  const output = await execModuleScript("list-custom-fonts.sh");
-  const next = [];
-  for (const line of output.split(/\r?\n/)) {
-    if (!line.startsWith("custom=")) continue;
-    const [id, nameBase64, regularHash, boldHash] = line.slice(7).split("|");
-    if (!SAFE_ID.test(id) || !id.startsWith("custom-") || !/^[0-9a-f]{64}$/.test(regularHash) || !/^[0-9a-f]{64}$/.test(boldHash)) continue;
-    try {
-      const name = decodeBase64Utf8(nameBase64);
-      if (!name || name.length > 60 || /[\u0000-\u001f\u007f]/.test(name)) continue;
-      next.push({
-        id, name, version: "Custom", variant: "User import", author: "User supplied",
-        license: "User responsibility", description: "Persisted custom Regular/Bold family.", custom: true,
-        previewRegular: `custom-fonts/${id}/regular.ttf`, previewBold: `custom-fonts/${id}/bold.ttf`,
-        sha256Regular: regularHash, sha256Bold: boldHash,
-      });
-    } catch (_) {
-      // Ignore corrupt persistent metadata rather than exposing it to the UI.
+  customRegistryReady = false;
+  try {
+    const output = await execModuleScript("list-custom-fonts.sh");
+    if (parseResult(output).status !== "ok") throw new Error("Custom-font registry returned an invalid response.");
+    const next = [];
+    for (const line of output.split(/\r?\n/)) {
+      if (!line.startsWith("custom=")) continue;
+      const [id, nameBase64, regularHash, boldHash] = line.slice(7).split("|");
+      if (!SAFE_ID.test(id) || !id.startsWith("custom-") || !/^[0-9a-f]{64}$/.test(regularHash) || !/^[0-9a-f]{64}$/.test(boldHash)) continue;
+      try {
+        const name = decodeBase64Utf8(nameBase64);
+        if (!name || new TextEncoder().encode(name).length > 80 || /[\u0000-\u001f\u007f]/.test(name)) continue;
+        next.push({
+          id, name, version: "Custom", variant: "User import", author: "User supplied",
+          license: "User responsibility", description: "Persisted custom Regular/Bold family.", custom: true,
+          previewRegular: `custom-fonts/${id}/regular.ttf`, previewBold: `custom-fonts/${id}/bold.ttf`,
+          sha256Regular: regularHash, sha256Bold: boldHash,
+        });
+      } catch (_) {
+        // Ignore corrupt persistent metadata rather than exposing it to the UI.
+      }
     }
+    customFonts = next;
+    customRegistryReady = true;
+    return next;
+  } catch (error) {
+    // Never leave entries from a prior successful read actionable after the
+    // persistent registry becomes unavailable.
+    customFonts = [];
+    throw error;
   }
-  customFonts = next;
 }
 
 async function ensurePreviewFont(font) {
   if (font.id === "system-default" || loadedFamilies.has(font.id)) return;
+  if (loadingFamilies.has(font.id)) return loadingFamilies.get(font.id);
+  if (typeof FontFace !== "function" || !document.fonts) throw new Error("Font previews are unsupported by this WebView.");
   const family = `pfs-${font.id}`;
   const regular = new FontFace(family, `url("${font.previewRegular}")`, { weight: "400" });
   const bold = new FontFace(family, `url("${font.previewBold}")`, { weight: "700" });
-  await Promise.all([regular.load(), bold.load()]);
-  document.fonts.add(regular);
-  document.fonts.add(bold);
-  loadedFamilies.add(font.id);
+  const loading = Promise.all([regular.load(), bold.load()])
+    .then(() => {
+      document.fonts.add(regular);
+      document.fonts.add(bold);
+      loadedFamilies.set(font.id, [regular, bold]);
+    })
+    .finally(() => loadingFamilies.delete(font.id));
+  loadingFamilies.set(font.id, loading);
+  return loading;
 }
 
-function previewLine(className, text, direction) {
+function previewLine(className, text, direction, font) {
   const line = document.createElement("p");
   line.className = className;
   line.textContent = text;
   line.dir = direction;
+  if (font?.id && font.id !== "system-default") line.style.fontFamily = `"pfs-${font.id}", sans-serif`;
   return line;
+}
+
+function mixedPreviewLine(font) {
+  const line = document.createElement("p");
+  line.className = "preview-digits";
+  line.dir = "auto";
+  const persian = document.createElement("span");
+  persian.textContent = "۱۲۳۴۵۶۷۸۹۰ · فارسی";
+  if (font.id !== "system-default") persian.style.fontFamily = `"pfs-${font.id}", sans-serif`;
+  const latin = document.createElement("span");
+  latin.className = "system-latin";
+  latin.textContent = " · 1234567890 · English";
+  line.append(persian, latin);
+  return line;
+}
+
+function handleChoiceKey(event) {
+  const choice = event.currentTarget;
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    chooseFont(choice.dataset.fontId);
+    return;
+  }
+  const choices = [...elements.fontList.querySelectorAll(".card-choice")]
+    .filter((candidate) => !candidate.closest(".font-card").classList.contains("filtered"));
+  if (!choices.length) return;
+  const current = choices.indexOf(choice);
+  let next = -1;
+  if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % choices.length;
+  if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current - 1 + choices.length) % choices.length;
+  if (event.key === "Home") next = 0;
+  if (event.key === "End") next = choices.length - 1;
+  if (next >= 0) {
+    event.preventDefault();
+    chooseFont(choices[next].dataset.fontId);
+    choices[next].focus();
+  }
+}
+
+function observePreview(card, font) {
+  if (font.id === "system-default") return;
+  const load = () => ensurePreviewFont(font).catch(() => card.classList.add("preview-error"));
+  if (typeof IntersectionObserver !== "function") {
+    load();
+    return;
+  }
+  if (!previewObserver) {
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        observer.unobserve(entry.target);
+        const observedFont = optionFor(entry.target.dataset.fontId);
+        if (observedFont) ensurePreviewFont(observedFont).catch(() => entry.target.classList.add("preview-error"));
+      }
+    }, { rootMargin: "320px 0px" });
+    previewObserver = observer;
+  }
+  previewObserver.observe(card);
 }
 
 function createFontCard(font) {
   const card = document.createElement("article");
   card.className = "font-card";
   card.dataset.fontId = font.id;
-  card.tabIndex = 0;
-  card.setAttribute("role", "radio");
-  card.addEventListener("click", () => chooseFont(font.id));
-  card.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      chooseFont(font.id);
-    }
-  });
+  const choice = document.createElement("div");
+  choice.className = "card-choice";
+  choice.dataset.fontId = font.id;
+  choice.tabIndex = -1;
+  choice.setAttribute("role", "radio");
+  choice.addEventListener("click", () => chooseFont(font.id));
+  choice.addEventListener("keydown", handleChoiceKey);
 
   const header = document.createElement("div");
   header.className = "card-header";
   const titleGroup = document.createElement("div");
   const title = document.createElement("h3");
   title.className = "font-name";
+  title.id = `font-title-${font.id}`;
   title.textContent = font.name;
+  choice.setAttribute("aria-labelledby", title.id);
   const meta = document.createElement("div");
   meta.className = "font-meta";
   meta.textContent = font.id === "system-default" ? "ROM-provided fallback" : `${font.version} · ${font.author} · ${font.license}`;
@@ -206,28 +351,40 @@ function createFontCard(font) {
   const previews = document.createElement("div");
   previews.className = "previews";
   previews.lang = "fa";
-  if (font.id !== "system-default") previews.style.fontFamily = `"pfs-${font.id}", sans-serif`;
   previews.append(
-    previewLine("preview-regular", "سلام، حال شما چطور است؟", "rtl"),
-    previewLine("preview-bold", "این یک متن نمونه برای نمایش فونت فارسی است.", "rtl"),
-    previewLine("preview-regular", "می‌روم، خانه‌ها، برنامه‌نویسی", "rtl"),
-    previewLine("preview-digits", "۱۲۳۴۵۶۷۸۹۰ · 1234567890 · English + فارسی", "auto"),
+    previewLine("preview-regular", "سلام، حال شما چطور است؟", "rtl", font),
+    previewLine("preview-bold", "این یک متن نمونه برای نمایش فونت فارسی است.", "rtl", font),
+    previewLine("preview-regular", "می‌روم، خانه‌ها، برنامه‌نویسی", "rtl", font),
+    mixedPreviewLine(font),
   );
+  if (font.id === "system-default") {
+    const note = document.createElement("small");
+    note.className = "preview-note";
+    note.textContent = "Rendered by the current WebView; the ROM fallback is restored after reboot.";
+    previews.append(note);
+  }
 
-  const choose = document.createElement("button");
-  choose.type = "button";
-  choose.className = "select-button";
+  const choose = document.createElement("span");
+  choose.className = "select-action";
   choose.textContent = "Choose";
-  choose.addEventListener("click", (event) => {
-    event.stopPropagation();
-    chooseFont(font.id);
-  });
-  card.append(header, previews, choose);
-  ensurePreviewFont(font).catch(() => card.classList.add("preview-error"));
+  choice.append(header, previews, choose);
+  card.append(choice);
+  if (font.custom) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "remove-font-button";
+    remove.textContent = "Remove custom font";
+    remove.setAttribute("aria-label", `Remove custom font ${font.name}`);
+    remove.addEventListener("click", () => removeCustomFont(font));
+    card.append(remove);
+  }
+  observePreview(card, font);
   return card;
 }
 
 function renderCards() {
+  if (previewObserver) previewObserver.disconnect();
+  previewObserver = undefined;
   elements.fontList.replaceChildren(...allOptions().map(createFontCard));
   elements.fontList.setAttribute("aria-busy", "false");
   filterCards();
@@ -235,7 +392,8 @@ function renderCards() {
 }
 
 function chooseFont(id) {
-  if (operationPending || !optionFor(id)) return;
+  const font = optionFor(id);
+  if (operationPending || !initialized || !layoutValid || !font || (font.custom && !customRegistryReady)) return;
   chosenId = id;
   updateDisplay();
 }
@@ -248,16 +406,29 @@ function updateDisplay() {
     const id = card.dataset.fontId;
     const chosen = id === chosenId;
     card.classList.toggle("chosen", chosen);
-    card.setAttribute("aria-checked", String(chosen));
+    const choice = card.querySelector(".card-choice");
+    choice.setAttribute("aria-checked", String(chosen));
+    choice.setAttribute("aria-disabled", String(operationPending || !initialized || !layoutValid));
     const marks = card.querySelector(".card-marks");
     marks.replaceChildren();
     if (id === activeId) marks.append(makeMark("Active", "active-mark"));
     if (id === selectedId) marks.append(makeMark("Selected", "selected-mark"));
-    const button = card.querySelector(".select-button");
-    button.disabled = chosen || operationPending;
-    button.textContent = chosen ? "Chosen" : "Choose";
+    const action = card.querySelector(".select-action");
+    action.textContent = chosen ? "Chosen" : "Choose";
+    const remove = card.querySelector(".remove-font-button");
+    if (remove) {
+      const removalUnverified = activeId === "unknown" || restartState !== "false";
+      const registryUnavailable = !customRegistryReady;
+      remove.disabled = operationPending || !initialized || registryUnavailable || removalUnverified || id === selectedId || id === activeId;
+      remove.title = registryUnavailable
+        ? "Custom-font registry unavailable; refresh before removing a font."
+        : removalUnverified || id === selectedId || id === activeId
+          ? "Switch away, reboot, and refresh until Active and Selected match before removing this font."
+          : "";
+    }
   }
-  elements.applyButton.disabled = operationPending || chosenId === selectedId;
+  updateRovingTabindex();
+  syncControls();
 }
 
 function makeMark(text, className) {
@@ -269,17 +440,54 @@ function makeMark(text, className) {
 
 function filterCards() {
   const query = elements.search.value.trim().toLocaleLowerCase();
+  let visible = 0;
   for (const card of elements.fontList.querySelectorAll(".font-card")) {
     const font = optionFor(card.dataset.fontId);
     const haystack = `${font.name} ${font.author || ""} ${font.variant || ""}`.toLocaleLowerCase();
-    card.classList.toggle("filtered", Boolean(query) && !haystack.includes(query));
+    const filtered = Boolean(query) && !haystack.includes(query);
+    card.classList.toggle("filtered", filtered);
+    if (!filtered) visible += 1;
+  }
+  elements.resultCount.textContent = `${visible} font${visible === 1 ? "" : "s"}`;
+  elements.emptyState.classList.toggle("hidden", visible !== 0);
+  updateRovingTabindex();
+}
+
+function updateRovingTabindex() {
+  const visible = [...elements.fontList.querySelectorAll(".font-card:not(.filtered) .card-choice")];
+  const preferred = visible.find((choice) => choice.dataset.fontId === chosenId) || visible[0];
+  for (const choice of elements.fontList.querySelectorAll(".card-choice")) {
+    choice.tabIndex = choice === preferred ? 0 : -1;
   }
 }
 
+function syncControls() {
+  const mutationsAllowed = initialized && layoutValid && !operationPending;
+  const chosen = coreReady ? optionFor(chosenId) : null;
+  const customChoiceReady = !chosen?.custom || customRegistryReady;
+  const currentPairValidated = Boolean(
+    validatedImportPair
+    && validatedImportPair.regularFile === elements.customRegular.files[0]
+    && validatedImportPair.boldFile === elements.customBold.files[0]
+  );
+  elements.applyButton.disabled = !mutationsAllowed || !chosen || !customChoiceReady || chosenId === selectedId;
+  elements.importButton.disabled = !mutationsAllowed || !importSupported || !customRegistryReady || !currentPairValidated;
+  elements.refreshButton.disabled = operationPending;
+  elements.rebootButton.disabled = operationPending || !initialized;
+  const customInputsDisabled = operationPending || !importSupported || !customRegistryReady;
+  elements.customName.disabled = customInputsDisabled;
+  elements.customRegular.disabled = customInputsDisabled;
+  elements.customBold.disabled = customInputsDisabled;
+  elements.fontList.setAttribute("aria-busy", String(operationPending));
+}
+
 function showNotice(message, isError = false) {
-  elements.notice.textContent = message;
-  elements.notice.classList.toggle("error", isError);
-  elements.notice.classList.remove("hidden");
+  const target = isError ? elements.errorNotice : elements.notice;
+  const other = isError ? elements.notice : elements.errorNotice;
+  other.textContent = "";
+  other.classList.add("hidden");
+  target.textContent = message;
+  target.classList.remove("hidden");
 }
 
 function updateRestartUi(required) {
@@ -289,23 +497,42 @@ function updateRestartUi(required) {
 }
 
 async function applyChosen() {
-  if (operationPending || chosenId === selectedId || !optionFor(chosenId)) return;
+  const chosen = optionFor(chosenId);
+  if (operationPending || chosenId === selectedId || !chosen || (chosen.custom && !customRegistryReady)) return;
   operationPending = true;
   updateDisplay();
+  elements.applyButton.textContent = "Applying…";
+  let applyError;
   try {
     const result = parseResult(await execModuleScript("apply-font.sh", [chosenId]));
     if (result.status !== "ok" || result.selected !== chosenId) throw new Error(result.message || "Selection rejected.");
-    selectedId = chosenId;
-    const restartRequired = activeId !== selectedId;
-    updateRestartUi(restartRequired);
-    showNotice(restartRequired
-      ? "Font selected successfully. Reboot is required to rebuild overlays and process font maps."
-      : "Selection now matches the active font. No restart is required.");
-    if (typeof window.ksu.toast === "function") window.ksu.toast(restartRequired ? "Font selected. Reboot required." : "Selection matches the active font.");
   } catch (error) {
-    showNotice(error.message || "Could not apply the selected font.", true);
+    applyError = error;
+  }
+  try {
+    await refreshStatus({ preserveChoice: true });
+    if (selectedId === chosenId) {
+      if (restartState === "true") {
+        showNotice("Font selected successfully. Reboot is required to rebuild overlays and process font maps.");
+        if (typeof window.ksu.toast === "function") window.ksu.toast("Font selected. Reboot required.");
+      } else if (restartState === "false") {
+        showNotice("Selection now matches the active font. No restart is required.");
+        if (typeof window.ksu.toast === "function") window.ksu.toast("Selection matches the active font.");
+      } else {
+        showNotice("Font selected, but the active system mount could not be verified. Reboot before relying on the change, then refresh status.");
+        if (typeof window.ksu.toast === "function") window.ksu.toast("Font selected; active state is unverified.");
+      }
+    } else if (applyError) {
+      showNotice(applyError.message || "Could not apply the selected font.", true);
+    } else {
+      showNotice("The operation returned, but the authoritative selected state did not change. Refresh and retry.", true);
+    }
+  } catch (statusError) {
+    const message = applyError?.message || "The selection command returned, but status could not be verified.";
+    showNotice(`${message} Use Refresh status before retrying.`, true);
   } finally {
     operationPending = false;
+    elements.applyButton.textContent = "Apply selection";
     updateDisplay();
   }
 }
@@ -317,6 +544,44 @@ async function validateFontFile(file, expectedWeight) {
   return buffer;
 }
 
+async function loadRenderableFontPair(regularFile, boldFile) {
+  const family = `pfs-import-${Date.now()}-${++transientFontSequence}`;
+  const urls = [];
+  try {
+    const regularUrl = URL.createObjectURL(regularFile);
+    urls.push(regularUrl);
+    const boldUrl = URL.createObjectURL(boldFile);
+    urls.push(boldUrl);
+    const regularFace = new FontFace(family, `url("${regularUrl}")`, { weight: "400" });
+    const boldFace = new FontFace(family, `url("${boldUrl}")`, { weight: "700" });
+    await Promise.all([regularFace.load(), boldFace.load()]);
+    return { family, faces: [regularFace, boldFace] };
+  } catch (_) {
+    throw new Error("The selected files could not be parsed by Android WebView as usable fonts.");
+  } finally {
+    for (const url of urls) URL.revokeObjectURL(url);
+  }
+}
+
+async function validateRenderableFontPair(regularFile, boldFile) {
+  const [regularBuffer, boldBuffer] = await Promise.all([
+    validateFontFile(regularFile, "regular"),
+    validateFontFile(boldFile, "bold"),
+  ]);
+  const rendered = await loadRenderableFontPair(regularFile, boldFile);
+  return { regularBuffer, boldBuffer, ...rendered };
+}
+
+function customFontMatchesExpected(font, expected) {
+  return Boolean(
+    font?.custom
+    && font.id === expected.id
+    && font.name === expected.name
+    && font.sha256Regular === expected.regularHash
+    && font.sha256Bold === expected.boldHash
+  );
+}
+
 function bytesToBase64(bytes) {
   let binary = "";
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {
@@ -326,22 +591,25 @@ function bytesToBase64(bytes) {
 }
 
 function randomToken() {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const bytes = window.crypto.getRandomValues(new Uint8Array(16));
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 async function sha256Hex(buffer) {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", buffer));
+  const digest = new Uint8Array(await window.crypto.subtle.digest("SHA-256", buffer));
   return Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-function writeBuffer(stream, path, buffer) {
+async function writeBuffer(stream, path, buffer) {
   const id = stream.open(path, false);
   if (!id) throw new Error("Could not open privileged import staging.");
   try {
     const bytes = new Uint8Array(buffer);
     for (let offset = 0; offset < bytes.length; offset += 192 * 1024) {
       if (!stream.write(id, bytesToBase64(bytes.subarray(offset, offset + 192 * 1024)))) throw new Error("Custom font transfer failed.");
+      if (offset > 0 && offset % (1536 * 1024) === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
     }
     if (!stream.flush(id)) throw new Error("Custom font transfer could not be flushed.");
   } finally {
@@ -351,11 +619,23 @@ function writeBuffer(stream, path, buffer) {
 
 async function importCustomFont() {
   if (operationPending) return;
-  if (typeof window.ksu.fileOutputStream !== "function") {
+  if (!importSupported) {
     showNotice("Custom import requires KernelSU Next Manager v3.1.0 or newer.", true);
     return;
   }
-  const name = elements.customName.value.trim();
+  if (!customRegistryReady) {
+    showNotice("Refresh the custom-font registry before importing a font.", true);
+    return;
+  }
+  const regularFile = elements.customRegular.files[0];
+  const boldFile = elements.customBold.files[0];
+  if (!validatedImportPair
+      || validatedImportPair.regularFile !== regularFile
+      || validatedImportPair.boldFile !== boldFile) {
+    showNotice("Wait for both selected files to pass local parsing and renderability checks before importing.", true);
+    return;
+  }
+  const name = elements.customName.value.trim().normalize("NFC");
   const nameBytes = new TextEncoder().encode(name);
   if (!name || nameBytes.length > 80 || /[\u0000-\u001f\u007f]/.test(name)) {
     showNotice("Enter a display name of at most 80 UTF-8 bytes without control characters.", true);
@@ -363,68 +643,190 @@ async function importCustomFont() {
   }
 
   operationPending = true;
-  elements.importButton.disabled = true;
+  syncControls();
+  elements.importButton.textContent = "Validating and importing…";
   let token;
+  let expected;
+  let finishAttempted = false;
+  let finishReportedSuccess = false;
+  let matchedBefore = false;
   try {
-    const regularFile = elements.customRegular.files[0];
-    const boldFile = elements.customBold.files[0];
-    const [regularBuffer, boldBuffer] = await Promise.all([
-      validateFontFile(regularFile, "regular"), validateFontFile(boldFile, "bold"),
-    ]);
+    // Repeat both checks on the exact captured File objects. Preview state is a
+    // UI gate, not authorization for a stale or programmatically changed pair.
+    const { regularBuffer, boldBuffer } = await validateRenderableFontPair(regularFile, boldFile);
     const [regularHash, boldHash] = await Promise.all([sha256Hex(regularBuffer), sha256Hex(boldBuffer)]);
+    expected = {
+      id: `custom-${regularHash.slice(0, 12)}${boldHash.slice(0, 12)}`,
+      name,
+      regularHash,
+      boldHash,
+    };
+    matchedBefore = customFontMatchesExpected(optionFor(expected.id), expected);
     token = randomToken();
     await execModuleScript("import-font.sh", ["begin", token]);
     const stream = window.ksu.fileOutputStream();
+    if (!stream || ["open", "write", "flush", "close"].some((method) => typeof stream[method] !== "function")) {
+      throw new Error("KernelSU returned an incompatible binary file stream.");
+    }
     const importRoot = `${DATA_DIR}/staging/${token}`;
-    writeBuffer(stream, `${importRoot}/regular.ttf`, regularBuffer);
-    writeBuffer(stream, `${importRoot}/bold.ttf`, boldBuffer);
+    elements.importButton.textContent = "Transferring Regular…";
+    await writeBuffer(stream, `${importRoot}/regular.ttf`, regularBuffer);
+    elements.importButton.textContent = "Transferring Bold…";
+    await writeBuffer(stream, `${importRoot}/bold.ttf`, boldBuffer);
     const encodedName = bytesToBase64(nameBytes);
-    writeBuffer(stream, `${importRoot}/name.b64`, new TextEncoder().encode(encodedName).buffer);
-    writeBuffer(stream, `${importRoot}/regular.expected.sha256`, new TextEncoder().encode(`${regularHash}\n`).buffer);
-    writeBuffer(stream, `${importRoot}/bold.expected.sha256`, new TextEncoder().encode(`${boldHash}\n`).buffer);
+    await writeBuffer(stream, `${importRoot}/name.b64`, new TextEncoder().encode(encodedName).buffer);
+    await writeBuffer(stream, `${importRoot}/regular.expected.sha256`, new TextEncoder().encode(`${regularHash}\n`).buffer);
+    await writeBuffer(stream, `${importRoot}/bold.expected.sha256`, new TextEncoder().encode(`${boldHash}\n`).buffer);
+    elements.importButton.textContent = "Persisting…";
+    finishAttempted = true;
     const result = parseResult(await execModuleScript("import-font.sh", ["finish", token]));
-    if (result.status !== "ok" || !SAFE_ID.test(result.id)) throw new Error(result.message || "Custom import was rejected.");
+    if (result.status !== "ok"
+        || result.id !== expected.id
+        || result.regular_sha256 !== expected.regularHash
+        || result.bold_sha256 !== expected.boldHash) {
+      throw new Error(result.message || "Custom import returned an invalid result.");
+    }
+    finishReportedSuccess = true;
     await loadCustomFonts();
+    if (!customFontMatchesExpected(optionFor(expected.id), expected)) {
+      const error = new Error("The custom-font registry does not match the requested name and file hashes.");
+      error.code = "registry-postcondition";
+      throw error;
+    }
     renderCards();
-    chosenId = result.id;
+    chosenId = expected.id;
+    clearImportForm();
     updateDisplay();
-    showNotice("Custom font imported. Review its preview, then apply the selection.");
+    showNotice(result.import_result === "updated-existing"
+      ? "The existing custom font was verified and its display name was updated. Review it, then apply the selection."
+      : "Custom font imported. Review its preview, then apply the selection.");
   } catch (error) {
-    if (token && SAFE_TOKEN.test(token)) execModuleScript("import-font.sh", ["cancel", token]).catch(() => {});
-    showNotice(error.message || "Custom font import failed.", true);
+    if (token && SAFE_TOKEN.test(token) && !finishReportedSuccess && error.code !== "bridge-timeout") {
+      try {
+        await execModuleScript("import-font.sh", ["cancel", token]);
+      } catch (_) {
+        // The original error remains authoritative; stale stages are pruned by
+        // a later begin operation.
+      }
+    }
+    let handled = false;
+    if (error.code === "bridge-timeout" && expected && finishAttempted) {
+      try {
+        await loadCustomFonts();
+        renderCards();
+        if (customFontMatchesExpected(optionFor(expected.id), expected)) {
+          chosenId = expected.id;
+          clearImportForm();
+          handled = true;
+          showNotice(matchedBefore
+            ? "The callback was late; the requested custom font was already present and remains verified."
+            : "The callback was late, but the requested name and both file hashes are present in the registry. Review the font, then apply it.");
+        }
+      } catch (_) {
+        renderCards();
+      }
+    }
+    if (!handled && finishReportedSuccess) {
+      renderCards();
+      const message = error.code === "registry-postcondition"
+        ? error.message
+        : "The font was persisted, but the custom-font registry could not be refreshed.";
+      showNotice(`${message} Refresh and verify the exact name and hashes before retrying.`, true);
+      handled = true;
+    }
+    if (!handled) showNotice(error.message || "Custom font import failed.", true);
   } finally {
     operationPending = false;
-    elements.importButton.disabled = false;
+    elements.importButton.textContent = "Validate and import";
+    updateDisplay();
+  }
+}
+
+function clearImportForm() {
+  previewSequence += 1;
+  validatedImportPair = null;
+  elements.customName.value = "";
+  elements.customRegular.value = "";
+  elements.customBold.value = "";
+  elements.customPreview.classList.add("hidden");
+  for (const previous of importPreviewFaces) document.fonts.delete(previous);
+  importPreviewFaces = [];
+}
+
+async function removeCustomFont(font) {
+  if (operationPending || !customRegistryReady || !font?.custom) return;
+  if (activeId === "unknown" || restartState !== "false" || font.id === selectedId || font.id === activeId) {
+    showNotice("Switch away, reboot, and refresh until Active and Selected match before removing this custom font.", true);
+    return;
+  }
+  if (!window.confirm(`Remove “${font.name}” from persistent custom-font storage? The original cannot be restored by this WebUI; module-local preview cleanup is best-effort.`)) return;
+  operationPending = true;
+  updateDisplay();
+  let commandError;
+  try {
+    const result = parseResult(await execModuleScript("delete-custom-font.sh", [font.id]));
+    if (result.status !== "ok" || result.removed !== font.id) throw new Error(result.message || "Custom font removal was rejected.");
+  } catch (error) {
+    commandError = error;
+  }
+
+  try {
+    await loadCustomFonts();
+    if (!optionFor(font.id)) {
+      for (const face of loadedFamilies.get(font.id) || []) document.fonts.delete(face);
+      loadedFamilies.delete(font.id);
+      loadingFamilies.delete(font.id);
+      if (chosenId === font.id) chosenId = selectedId;
+      renderCards();
+      showNotice(commandError
+        ? "The command result was late or unsuccessful, but a fresh registry read confirms the persistent custom font is absent. Module-local preview cleanup is best-effort and will be retried on refresh or update."
+        : "Persistent custom font removed. Module-local preview cleanup is best-effort and will be retried on refresh or update if needed.");
+    } else {
+      renderCards();
+      showNotice(commandError?.message || "The removal command returned, but the custom font remains in the authoritative registry.", true);
+    }
+  } catch (registryError) {
+    if (!optionFor(chosenId)) chosenId = selectedId;
+    renderCards();
+    const commandMessage = commandError?.message || "The removal command returned.";
+    showNotice(`${commandMessage} The custom-font registry could not verify the outcome; refresh before retrying.`, true);
+  } finally {
+    operationPending = false;
     updateDisplay();
   }
 }
 
 async function previewImport() {
+  const sequence = ++previewSequence;
   const regularFile = elements.customRegular.files[0];
   const boldFile = elements.customBold.files[0];
-  if (!regularFile || !boldFile) return;
+  validatedImportPair = null;
+  for (const previous of importPreviewFaces) document.fonts.delete(previous);
+  importPreviewFaces = [];
+  elements.customPreview.classList.add("hidden");
+  syncControls();
+  if (!regularFile || !boldFile) {
+    elements.importSupport.textContent = "Choose both Regular and Bold files to validate their structure and renderability.";
+    return;
+  }
+  elements.importSupport.textContent = "Validating the exact selected file pair…";
   try {
-    await Promise.all([validateFontFile(regularFile, "regular"), validateFontFile(boldFile, "bold")]);
-    const family = `pfs-import-${Date.now()}`;
-    const regularUrl = URL.createObjectURL(regularFile);
-    const boldUrl = URL.createObjectURL(boldFile);
-    const regular = new FontFace(family, `url("${regularUrl}")`, { weight: "400" });
-    const bold = new FontFace(family, `url("${boldUrl}")`, { weight: "700" });
-    try {
-      await Promise.all([regular.load(), bold.load()]);
-    } finally {
-      URL.revokeObjectURL(regularUrl);
-      URL.revokeObjectURL(boldUrl);
-    }
-    for (const previous of importPreviewFaces) document.fonts.delete(previous);
-    importPreviewFaces = [regular, bold];
+    const { family, faces } = await validateRenderableFontPair(regularFile, boldFile);
+    if (sequence !== previewSequence
+        || elements.customRegular.files[0] !== regularFile
+        || elements.customBold.files[0] !== boldFile) return;
+    importPreviewFaces = faces;
     for (const face of importPreviewFaces) document.fonts.add(face);
+    validatedImportPair = { regularFile, boldFile };
     elements.customPreview.style.fontFamily = `"${family}", sans-serif`;
     elements.customPreview.classList.remove("hidden");
-    elements.importSupport.textContent = "Regular and Bold passed local SFNT, shaping-table, weight, and Persian coverage checks.";
+    elements.importSupport.textContent = "Regular and Bold passed local SFNT, shaping-table, weight, Persian coverage, and WebView renderability checks.";
+    syncControls();
   } catch (error) {
-    elements.customPreview.classList.add("hidden");
+    if (sequence !== previewSequence) return;
+    validatedImportPair = null;
     elements.importSupport.textContent = error.message;
+    syncControls();
   }
 }
 
@@ -440,60 +842,109 @@ function fontLoaderLabel(status) {
 }
 
 async function rebootNow() {
+  if (operationPending || !initialized) return;
   if (!window.confirm("Reboot now to rebuild font mounts and Android font maps?")) return;
+  operationPending = true;
+  updateDisplay();
   showNotice("Reboot requested…");
-  elements.rebootButton.disabled = true;
   try {
     await execModuleScript("reboot-device.sh");
   } catch (error) {
     showNotice(error.message || "Reboot request failed.", true);
-    elements.rebootButton.disabled = false;
+  } finally {
+    operationPending = false;
+    updateDisplay();
   }
 }
 
-async function initialize() {
+async function refreshStatus({ preserveChoice = true, announce = false } = {}) {
+  const status = parseResult(await execModuleScript("get-status.sh"));
+  if (status.status !== "ok") throw new Error("Could not read module status.");
+  if (status.active === "unknown" || SAFE_ID.test(status.active)) activeId = status.active;
+  if (SAFE_ID.test(status.selected)) selectedId = status.selected;
+  if (!preserveChoice || !optionFor(chosenId)) chosenId = selectedId;
+  restartState = new Set(["true", "false", "unknown"]).has(status.restart_required)
+    ? status.restart_required : "unknown";
+  layoutValid = status.layout === "valid";
+  elements.layoutStatus.textContent = layoutValid ? "Verified four-file AOSP layout" : "Invalid — reinstall required";
+  elements.fontloaderStatus.textContent = fontLoaderLabel(status.fontloader);
+  elements.fontloaderGuidance.textContent = status.fontloader === "enabled"
+    ? "FontLoader is active. It remains an external module and helps apps that later lose module-font access through mount-namespace hiding."
+    : "On Android 12+, external FontLoader may be needed when hidden apps still see stock Noto fonts because fonts load lazily after their module mounts disappear.";
+  if (restartState === "unknown") {
+    elements.restartBadge.textContent = "Active verification unavailable";
+    elements.restartBadge.classList.remove("hidden");
+    elements.restartPanel.classList.add("hidden");
+  } else {
+    updateRestartUi(restartState === "true");
+  }
+  const warnings = [];
+  if (!layoutValid) warnings.push("Saved ROM font layout is invalid. Reinstall before changing fonts.");
+  if (status.active_scope === "unavailable") warnings.push("The active system font could not be verified from Android's global mount namespace; selected state is shown separately.");
+  if (announce) showNotice(warnings.length ? warnings.join(" ") : "Status refreshed from the effective system mount.", !layoutValid);
+  updateDisplay();
+  return { status, warnings };
+}
+
+async function refreshFromUi() {
+  if (operationPending) return;
+  await initialize({ preserveChoice: true, announce: true });
+}
+
+async function initialize({ preserveChoice = false, announce = false } = {}) {
+  if (operationPending) return;
+  operationPending = true;
+  elements.refreshButton.textContent = announce ? "Refreshing…" : "Loading…";
+  syncControls();
   try {
-    const response = await fetch("font-manifest.json", { cache: "no-store" });
-    if (!response.ok) throw new Error("Could not load the font manifest.");
-    manifest = await response.json();
-    validateManifest(manifest);
     verifyBridge();
-    await loadCustomFonts();
-    renderCards();
-    const status = parseResult(await execModuleScript("get-status.sh"));
-    if (status.status !== "ok") throw new Error("Could not read module status.");
-    if (status.active === "unknown" || optionFor(status.active)) activeId = status.active;
-    if (SAFE_ID.test(status.selected) && optionFor(status.selected)) selectedId = status.selected;
-    chosenId = selectedId;
-    elements.fontloaderStatus.textContent = fontLoaderLabel(status.fontloader);
-    elements.fontloaderGuidance.textContent = status.fontloader === "enabled"
-      ? "FontLoader is active. It remains an external module and helps apps that later lose module-font access through mount-namespace hiding."
-      : "On Android 12+, external FontLoader may be needed when hidden apps still see stock Noto fonts because fonts load lazily after their module mounts disappear.";
-    if (status.restart_required === "unknown") {
-      elements.restartBadge.textContent = "Active verification unavailable";
-      elements.restartBadge.classList.remove("hidden");
-      elements.restartPanel.classList.add("hidden");
-    } else {
-      updateRestartUi(status.restart_required === "true");
+    if (!coreReady) {
+      const response = await fetch("font-manifest.json", { cache: "no-store" });
+      if (!response.ok) throw new Error("Could not load the font manifest.");
+      manifest = await response.json();
+      validateManifest(manifest);
+      coreReady = true;
     }
-    if (status.layout !== "valid") showNotice("Saved ROM font layout is invalid. Reinstall before changing fonts.", true);
-    if (status.active_scope === "unavailable") showNotice("The active system font could not be verified from Android's global mount namespace. The saved selection is still shown separately.");
-    const importSupported = typeof window.ksu.fileOutputStream === "function";
-    elements.importButton.disabled = !importSupported;
+
+    let customWarning = "";
+    try {
+      await loadCustomFonts();
+    } catch (error) {
+      customWarning = `Custom-font registry unavailable (${error.message || "temporary error"}); bundled fonts remain usable.`;
+    }
+    renderCards();
+    const { warnings } = await refreshStatus({ preserveChoice });
+    if (!preserveChoice || !optionFor(chosenId)) chosenId = selectedId;
+    importSupported = supportsCustomImport();
     elements.importSupport.textContent = importSupported
       ? "KernelSU binary file import is available. Files never leave the device."
-      : "Custom import needs KernelSU Next Manager v3.1.0+ file-stream support.";
+      : "Custom import needs KernelSU Next Manager v3.1.0+ and a current Android System WebView.";
+    initialized = true;
+    const combinedWarnings = [...warnings];
+    if (customWarning) combinedWarnings.push(customWarning);
+    if (combinedWarnings.length) showNotice(combinedWarnings.join(" "), !layoutValid);
+    else if (announce) showNotice("Status and custom-font registry refreshed.");
     updateDisplay();
   } catch (error) {
+    initialized = false;
+    layoutValid = false;
     elements.fontList.setAttribute("aria-busy", "false");
-    elements.activeFont.textContent = "Unavailable";
-    elements.selectedFont.textContent = "Unavailable";
+    elements.layoutStatus.textContent = "Verification unavailable";
+    if (!coreReady) {
+      elements.activeFont.textContent = "Unavailable";
+      elements.selectedFont.textContent = "Unavailable";
+    }
     showNotice(error.message || "WebUI initialization failed.", true);
+  } finally {
+    operationPending = false;
+    elements.refreshButton.textContent = "Refresh status";
+    syncControls();
   }
 }
 
 elements.search.addEventListener("input", filterCards);
 elements.applyButton.addEventListener("click", applyChosen);
+elements.refreshButton.addEventListener("click", refreshFromUi);
 elements.rebootButton.addEventListener("click", rebootNow);
 elements.laterButton.addEventListener("click", () => elements.restartPanel.classList.add("hidden"));
 elements.importButton.addEventListener("click", importCustomFont);

@@ -1,3 +1,5 @@
+LICENSE
+THIRD_PARTY_NOTICES.md
 assets/fonts/cairo/LICENSE
 assets/fonts/cairo/bold.ttf
 assets/fonts/cairo/regular.ttf
@@ -45,6 +47,7 @@ assets/fonts/vazirmatn/regular.ttf
 customize.sh
 module.prop
 scripts/apply-font.sh
+scripts/delete-custom-font.sh
 scripts/get-status.sh
 scripts/import-font.sh
 scripts/lib.sh

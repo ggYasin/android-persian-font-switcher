@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0-rc1
+
+- Preserved rc4's working four-target AOSP overlay, default Vazirmatn selection, mount-provider boundary, and reboot-only activation model.
+- Strengthened installer requirements from unrelated whole-file string checks to exact `und-Arab` compact/elegant family membership, Regular/Bold weights, target presence, and atomic supported-target state.
+- Fixed a shell conditional failure mode that could mask selection-state write errors; all critical state operations now return explicit status.
+- Staged and verified complete font payloads before enabling `skip_mount`, added kernel-owned advisory `flock` serialization plus conservative legacy-lock migration, and added transaction rollback/recovery with storage barriers for signals, process death, and sudden restart.
+- Added safe custom-font deletion, duplicate-content name updates, shared apply/import/delete serialization, symlink checks, private-by-default persistent storage, and 24-hour cleanup leases for abandoned import stages.
+- Added WebUI callback watchdogs with authoritative status recovery, manual refresh, initialization/layout gates, operation progress, safe deletion controls, and clearer multi-warning diagnostics.
+- Added keyboard-accessible radio navigation, truthful mixed Latin/Persian previews, lazy font loading, import-preview race protection, WebView renderability gating, and consistent 80-byte normalized custom names.
+- Added explicit requirements/support documentation, storage and recovery guidance, a tested-device matrix, contributor/issue/PR templates, and clarified manager update-network behavior.
+- Documented why crDroid's RRO-based picker can restart SystemUI but cannot activate this module's boot-bound replacement font files.
+- Added in-manager `updateJson`, packaged project/license notices, centralized archive naming from `module.prop`, exact development dependencies, action pinning, reproducibility checks, and a least-privilege tag-gated draft-to-publish workflow.
+- Expanded regressions for false-positive ROM layouts, live/stale locks, state-write rollback, staging cleanup, deletion, and release/update metadata.
+
+This remains a prerelease until update-from-rc4, bundled/custom switching, System Default, removal, and reboot behavior receive a clean real-device smoke test.
+
 ## 0.1.0-rc4
 
 - Fixed rc3 installation failures caused by treating optional persistent custom-preview restoration as a fatal installer prerequisite.

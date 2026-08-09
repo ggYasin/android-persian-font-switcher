@@ -1,6 +1,7 @@
 id=persian_font_switcher
 name=Persian Font Switcher
-version=0.1.0-rc4
-versionCode=103
+version=0.2.0-rc1
+versionCode=200
 author=Yasin Fadaee
 description=Switch Android Persian/Arabic fallback fonts from a KernelSU WebUI while preserving the selected Latin sans-serif font.
+updateJson=https://raw.githubusercontent.com/ggYasin/android-persian-font-switcher/main/update.json

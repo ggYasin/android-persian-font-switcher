@@ -20,6 +20,7 @@ from fontTools.ttLib import TTFont
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_PATH = ROOT / "webroot/font-manifest.json"
 PAYLOAD_LIST = ROOT / "scripts/payload-files.txt"
+REQUIRED_RELEASE_DOCUMENTS = ("LICENSE", "THIRD_PARTY_NOTICES.md")
 FONT_IDS = (
     "vazirmatn",
     "estedad",
@@ -104,6 +105,9 @@ def payload_files() -> list[str]:
         fail("Payload list must be bytewise sorted")
     if len(paths) != len(set(paths)):
         fail("Payload list contains duplicates")
+    missing_release_documents = set(REQUIRED_RELEASE_DOCUMENTS).difference(paths)
+    if missing_release_documents:
+        fail(f"Release payload omits required legal documents: {sorted(missing_release_documents)}")
     for relative in paths:
         path = Path(relative)
         if path.is_absolute() or ".." in path.parts:
@@ -115,7 +119,37 @@ def payload_files() -> list[str]:
     return paths
 
 
-def module_properties() -> None:
+def release_documentation() -> None:
+    license_text = (ROOT / "LICENSE").read_text()
+    if "MIT License" not in license_text or "Copyright (c)" not in license_text:
+        fail("Root MIT license text is missing or incomplete")
+    notices_text = (ROOT / "THIRD_PARTY_NOTICES.md").read_text()
+    if "Third-party font notices" not in notices_text or "Font software retains its upstream license" not in notices_text:
+        fail("Third-party notices are missing or incomplete")
+
+    release_text_paths = (
+        ROOT / "README.md",
+        ROOT / "CHANGELOG.md",
+        ROOT / "SECURITY.md",
+        ROOT / "CODE_OF_CONDUCT.md",
+        ROOT / "CONTRIBUTING.md",
+        ROOT / "module.prop",
+        ROOT / "update.json",
+        *sorted((ROOT / "docs").glob("*.md")),
+    )
+    forbidden_placeholders = (
+        "BUILD_CHECKSUM_PLACEHOLDER",
+        "RELEASE_CHECKSUM_PLACEHOLDER",
+        "[INSERT CONTACT METHOD]",
+    )
+    for path in release_text_paths:
+        text = path.read_text()
+        for marker in forbidden_placeholders:
+            if marker in text:
+                fail(f"Unresolved release placeholder in {path.relative_to(ROOT)}: {marker}")
+
+
+def module_properties() -> dict[str, str]:
     values: dict[str, str] = {}
     for line in (ROOT / "module.prop").read_text().splitlines():
         if not line or "=" not in line:
@@ -127,13 +161,32 @@ def module_properties() -> None:
     expected = {
         "id": "persian_font_switcher",
         "name": "Persian Font Switcher",
-        "version": "0.1.0-rc4",
-        "versionCode": "103",
         "author": "Yasin Fadaee",
+        "updateJson": "https://raw.githubusercontent.com/ggYasin/android-persian-font-switcher/main/update.json",
     }
     for key, value in expected.items():
         if values.get(key) != value:
             fail(f"Unexpected module.prop {key}")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", values.get("version", "")):
+        fail("Invalid module.prop version")
+    if not re.fullmatch(r"[1-9][0-9]*", values.get("versionCode", "")):
+        fail("Invalid module.prop versionCode")
+    return values
+
+
+def update_metadata(module: dict[str, str]) -> None:
+    update = json.loads((ROOT / "update.json").read_text())
+    version = module["version"]
+    expected_url = (
+        "https://github.com/ggYasin/android-persian-font-switcher/releases/download/"
+        f"v{version}/Persian-Font-Switcher-v{version}.zip"
+    )
+    if update.get("version") != version or update.get("versionCode") != int(module["versionCode"]):
+        fail("update.json version metadata differs from module.prop")
+    if update.get("zipUrl") != expected_url:
+        fail("update.json release URL does not match the versioned archive")
+    if update.get("changelog") != "https://raw.githubusercontent.com/ggYasin/android-persian-font-switcher/main/CHANGELOG.md":
+        fail("update.json changelog URL is unexpected")
 
 
 def validate_font(path: Path, expected_hash: str, expected_weight: int, non_latin: bool) -> None:
@@ -164,7 +217,12 @@ def validate_font(path: Path, expected_hash: str, expected_weight: int, non_lati
 
 def manifest_and_fonts() -> dict:
     manifest = json.loads(MANIFEST_PATH.read_text())
-    if manifest.get("schema") != 2 or manifest.get("projectVersion") != "0.1.0-rc4":
+    module_version = next(
+        line.split("=", 1)[1]
+        for line in (ROOT / "module.prop").read_text().splitlines()
+        if line.startswith("version=")
+    )
+    if manifest.get("schema") != 2 or manifest.get("projectVersion") != module_version:
         fail("Unsupported manifest schema/version")
     if manifest.get("systemDefault", {}).get("id") != "system-default":
         fail("System Default manifest entry is missing")
@@ -226,7 +284,7 @@ def static_webui() -> None:
     html = (ROOT / "webroot/index.html").read_text()
     js = (ROOT / "webroot/app.js").read_text()
     css = (ROOT / "webroot/style.css").read_text()
-    for marker in ("font-list", "active-font", "selected-font", "font-search", "custom-regular", "custom-bold", "apply-button", "fontloader-status", "Content-Security-Policy"):
+    for marker in ("font-list", "active-font", "selected-font", "font-search", "custom-regular", "custom-bold", "apply-button", "refresh-button", "layout-status", "role=\"radiogroup\"", "fontloader-status", "Content-Security-Policy"):
         if marker not in html:
             fail(f"Missing WebUI marker: {marker}")
     if re.search(r"https?://|(?:^|[\"'])//", html + js + css, re.MULTILINE):
@@ -234,7 +292,7 @@ def static_webui() -> None:
     for forbidden in ("eval(", "new function", "xmlhttprequest", "websocket", "ksu.spawn", "killall", "ctl.restart", "mount --bind"):
         if forbidden in js.lower():
             fail(f"Forbidden WebUI behavior: {forbidden}")
-    for marker in ("new FontFace", "fileOutputStream", "validateFontFile", "PfsFontValidator", "restart_required"):
+    for marker in ("new FontFace", "IntersectionObserver", "fileOutputStream", "validateFontFile", "PfsFontValidator", "restart_required", "bridge-timeout", "delete-custom-font.sh", "refreshStatus"):
         if marker not in js:
             fail(f"Missing WebUI feature: {marker}")
     if "SAFE_ID" not in js or "optionFor(args[0])" not in js:
@@ -248,10 +306,12 @@ def syntax_and_modes() -> None:
         if script.parent.name == "scripts" and script.name not in {"build.sh", "validate.sh"} and not os.access(script, os.X_OK):
             fail(f"Runtime script is not executable: {script.relative_to(ROOT)}")
     node = shutil.which("node")
-    if node:
-        subprocess.run([node, "--check", str(ROOT / "webroot/app.js")], check=True)
-        subprocess.run([node, "--check", str(ROOT / "webroot/font-validator.js")], check=True)
-        subprocess.run([node, str(ROOT / "tests/test_font_validator.js")], check=True)
+    if not node:
+        fail("Node.js is required for JavaScript syntax and font-validator tests")
+    subprocess.run([node, "--check", str(ROOT / "webroot/app.js")], check=True)
+    subprocess.run([node, "--check", str(ROOT / "webroot/font-validator.js")], check=True)
+    subprocess.run([node, str(ROOT / "tests/test_font_validator.js")], check=True)
+    subprocess.run([node, str(ROOT / "tests/test_webui_import.js")], check=True)
     reboot_script = (ROOT / "scripts/reboot-device.sh").read_text()
     if "if /system/bin/svc power reboot; then" not in reboot_script or reboot_script.index("svc power reboot") > reboot_script.index("/system/bin/reboot"):
         fail("Reboot action does not retain the svc-to-reboot fallback order")
@@ -264,6 +324,9 @@ def archive_validation(archive_path: Path, expected: list[str]) -> None:
         names = [info.filename for info in archive.infolist() if not info.is_dir()]
         if names != expected:
             fail("ZIP file list/order does not match the declared payload")
+        missing_release_documents = set(REQUIRED_RELEASE_DOCUMENTS).difference(names)
+        if missing_release_documents:
+            fail(f"ZIP omits required legal documents: {sorted(missing_release_documents)}")
         for info in archive.infolist():
             name = info.filename
             if name.startswith("/") or ".." in Path(name).parts or re.search(
@@ -304,7 +367,9 @@ def main() -> int:
         parser.error("use --source-only or --archive")
 
     expected = payload_files()
-    module_properties()
+    release_documentation()
+    module = module_properties()
+    update_metadata(module)
     manifest_and_fonts()
     initial_overlay()
     static_webui()

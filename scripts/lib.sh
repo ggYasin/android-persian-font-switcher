@@ -18,7 +18,7 @@ pfs_valid_id() {
   [ -n "$PFS_CHECK_ID" ] || return 1
   [ "${#PFS_CHECK_ID}" -le 32 ] || return 1
   case "$PFS_CHECK_ID" in
-    *[!a-z0-9_-]*|-*|_*|*--*|*__*) return 1 ;;
+    *[!a-z0-9_-]*|-*|_*) return 1 ;;
   esac
   return 0
 }
@@ -39,9 +39,53 @@ pfs_custom_dir() {
   printf '%s\n' "$PFS_CUSTOM_DIR/$PFS_CUSTOM_ID"
 }
 
+pfs_custom_storage_safe() {
+  for PFS_STORAGE_ROOT in "$PFS_DATA_DIR" "$PFS_CUSTOM_DIR"; do
+    if [ -e "$PFS_STORAGE_ROOT" ] || [ -L "$PFS_STORAGE_ROOT" ]; then
+      [ -d "$PFS_STORAGE_ROOT" ] && [ ! -L "$PFS_STORAGE_ROOT" ] || return 1
+    fi
+  done
+  return 0
+}
+
+# Complete or abort the one fixed custom-font deletion transaction. Callers
+# must hold the shared operation flock before invoking this helper.
+pfs_recover_delete_transaction() {
+  PFS_DELETE_MARKER="$PFS_DATA_DIR/.delete-transaction"
+  PFS_DELETE_MARKER_TMP="$PFS_DATA_DIR/.delete-transaction.new"
+  PFS_DELETE_TRASH="$PFS_DATA_DIR/.deleted-custom-font"
+  PFS_DELETE_RECOVERED=0
+  pfs_custom_storage_safe || return 1
+
+  if [ -e "$PFS_DELETE_MARKER_TMP" ] || [ -L "$PFS_DELETE_MARKER_TMP" ]; then
+    [ -f "$PFS_DELETE_MARKER_TMP" ] && [ ! -L "$PFS_DELETE_MARKER_TMP" ] || return 1
+    rm -f "$PFS_DELETE_MARKER_TMP" || return 1
+    PFS_DELETE_RECOVERED=1
+  fi
+
+  if [ -e "$PFS_DELETE_MARKER" ] || [ -L "$PFS_DELETE_MARKER" ]; then
+    [ -f "$PFS_DELETE_MARKER" ] && [ ! -L "$PFS_DELETE_MARKER" ] || return 1
+    IFS= read -r PFS_DELETE_ID <"$PFS_DELETE_MARKER" 2>/dev/null || return 1
+    PFS_DELETE_PATH=$(pfs_custom_dir "$PFS_DELETE_ID") || return 1
+    if [ -e "$PFS_DELETE_TRASH" ] || [ -L "$PFS_DELETE_TRASH" ]; then
+      [ -d "$PFS_DELETE_TRASH" ] && [ ! -L "$PFS_DELETE_TRASH" ] || return 1
+      [ ! -e "$PFS_DELETE_PATH" ] && [ ! -L "$PFS_DELETE_PATH" ] || return 1
+      rm -rf "$PFS_DELETE_TRASH" || return 1
+    fi
+    # When the canonical path remains, power was lost before the atomic move;
+    # removing the marker aborts that uncommitted deletion without data loss.
+    rm -f "$PFS_DELETE_MARKER" || return 1
+    PFS_DELETE_RECOVERED=1
+  elif [ -e "$PFS_DELETE_TRASH" ] || [ -L "$PFS_DELETE_TRASH" ]; then
+    # A trash path without its durable marker has no safely provable owner.
+    return 1
+  fi
+  return 0
+}
+
 pfs_read_hash_file() {
   PFS_HASH_FILE="$1"
-  [ -f "$PFS_HASH_FILE" ] || return 1
+  [ -f "$PFS_HASH_FILE" ] && [ ! -L "$PFS_HASH_FILE" ] || return 1
   IFS= read -r PFS_STORED_HASH <"$PFS_HASH_FILE" || return 1
   [ "${#PFS_STORED_HASH}" -eq 64 ] || return 1
   case "$PFS_STORED_HASH" in *[!0-9a-f]*) return 1 ;; esac
@@ -63,11 +107,17 @@ pfs_custom_name_valid() {
   PFS_NAME_B64=$(tr -d '\n' <"$PFS_NAME_FILE" 2>/dev/null) || return 1
   [ -n "$PFS_NAME_B64" ] && [ "${#PFS_NAME_B64}" -le 256 ] || return 1
   case "$PFS_NAME_B64" in *[!A-Za-z0-9+/=]*) return 1 ;; esac
+  PFS_NAME_SIZE=$(printf '%s' "$PFS_NAME_B64" | base64 -d 2>/dev/null | wc -c | tr -d ' ') || return 1
+  [ "$PFS_NAME_SIZE" -ge 1 ] && [ "$PFS_NAME_SIZE" -le 80 ] || return 1
+  if printf '%s' "$PFS_NAME_B64" | base64 -d 2>/dev/null | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    return 1
+  fi
   printf '%s' "$PFS_NAME_B64" | base64 -d >/dev/null 2>&1
 }
 
 pfs_custom_valid() {
   PFS_CUSTOM_CHECK_ID="$1"
+  pfs_custom_storage_safe || return 1
   PFS_CUSTOM_CHECK_DIR=$(pfs_custom_dir "$PFS_CUSTOM_CHECK_ID") || return 1
   [ ! -L "$PFS_CUSTOM_CHECK_DIR" ] || return 1
   pfs_custom_font_file_valid "$PFS_CUSTOM_CHECK_DIR/regular.ttf" \
@@ -135,6 +185,67 @@ pfs_target_weight() {
   esac
 }
 
+pfs_acquire_lock() {
+  PFS_ACQUIRE_FILE="$1"
+  PFS_LOCK_ERROR=unavailable
+  PFS_LOCK_RECOVERED=0
+  [ -z "${PFS_HELD_LOCK:-}" ] || { PFS_LOCK_ERROR=busy; return 1; }
+  command -v flock >/dev/null 2>&1 || return 1
+
+  # Migrate only an owner-identified, dead directory lock from pre-flock
+  # releases. An empty legacy apply lock is indistinguishable from a live rc4
+  # operation and therefore fails closed until reinstall/update removes it.
+  if [ -d "$PFS_ACQUIRE_FILE" ] && [ ! -L "$PFS_ACQUIRE_FILE" ]; then
+    PFS_LEGACY_PID=""
+    if [ -f "$PFS_ACQUIRE_FILE/pid" ] && [ ! -L "$PFS_ACQUIRE_FILE/pid" ]; then
+      IFS= read -r PFS_LEGACY_PID <"$PFS_ACQUIRE_FILE/pid" 2>/dev/null || PFS_LEGACY_PID=""
+    fi
+    case "$PFS_LEGACY_PID" in *[!0-9]*|'') PFS_LOCK_ERROR=busy; return 1 ;; esac
+    if kill -0 "$PFS_LEGACY_PID" 2>/dev/null; then
+      PFS_LOCK_ERROR=busy
+      return 1
+    fi
+    for PFS_LEGACY_META in pid boot-id start-time; do
+      [ ! -L "$PFS_ACQUIRE_FILE/$PFS_LEGACY_META" ] || return 1
+      rm -f "$PFS_ACQUIRE_FILE/$PFS_LEGACY_META" 2>/dev/null || return 1
+    done
+    if rmdir "$PFS_ACQUIRE_FILE" 2>/dev/null; then
+      PFS_LOCK_RECOVERED=1
+    elif [ ! -f "$PFS_ACQUIRE_FILE" ] || [ -L "$PFS_ACQUIRE_FILE" ]; then
+      return 1
+    fi
+  fi
+
+  if [ -e "$PFS_ACQUIRE_FILE" ] || [ -L "$PFS_ACQUIRE_FILE" ]; then
+    [ -f "$PFS_ACQUIRE_FILE" ] && [ ! -L "$PFS_ACQUIRE_FILE" ] || return 1
+  fi
+  if ! exec 9>>"$PFS_ACQUIRE_FILE"; then
+    return 1
+  fi
+  if ! flock -n 9; then
+    exec 9>&-
+    PFS_LOCK_ERROR=busy
+    return 1
+  fi
+  if ! chmod 0600 "$PFS_ACQUIRE_FILE"; then
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
+    return 1
+  fi
+  PFS_HELD_LOCK="$PFS_ACQUIRE_FILE"
+  PFS_LOCK_ERROR=""
+  return 0
+}
+
+pfs_release_lock() {
+  PFS_RELEASE_FILE="$1"
+  [ "${PFS_HELD_LOCK:-}" = "$PFS_RELEASE_FILE" ] || return 0
+  flock -u 9 2>/dev/null || true
+  exec 9>&-
+  PFS_HELD_LOCK=""
+  return 0
+}
+
 pfs_validate_targets() {
   [ -s "$PFS_TARGETS_FILE" ] || return 1
   PFS_TARGET_COUNT=0
@@ -189,18 +300,22 @@ pfs_read_selection() {
 
 pfs_enable_skip_mount() {
   PFS_SKIP_TMP="$PFS_DIR/.skip_mount.tmp.$$"
-  : >"$PFS_SKIP_TMP"
-  chmod 0600 "$PFS_SKIP_TMP"
-  mv -f "$PFS_SKIP_TMP" "$PFS_DIR/skip_mount"
+  : >"$PFS_SKIP_TMP" || return 1
+  chmod 0600 "$PFS_SKIP_TMP" || { rm -f "$PFS_SKIP_TMP"; return 1; }
+  mv -f "$PFS_SKIP_TMP" "$PFS_DIR/skip_mount" || { rm -f "$PFS_SKIP_TMP"; return 1; }
+  return 0
 }
 
 pfs_write_selection() {
   PFS_NEW_SELECTION="$1"
-  mkdir -p "$PFS_STATE_DIR"
+  [ ! -L "$PFS_STATE_DIR" ] || return 1
+  mkdir -p "$PFS_STATE_DIR" || return 1
+  [ -d "$PFS_STATE_DIR" ] || return 1
+  [ ! -L "$PFS_STATE_FILE" ] && [ ! -d "$PFS_STATE_FILE" ] || return 1
   PFS_STATE_TMP="$PFS_STATE_FILE.tmp.$$"
-  printf '%s\n' "$PFS_NEW_SELECTION" >"$PFS_STATE_TMP"
-  chmod 0600 "$PFS_STATE_TMP"
-  mv -f "$PFS_STATE_TMP" "$PFS_STATE_FILE"
+  printf '%s\n' "$PFS_NEW_SELECTION" >"$PFS_STATE_TMP" || return 1
+  chmod 0600 "$PFS_STATE_TMP" || { rm -f "$PFS_STATE_TMP"; return 1; }
+  mv -f "$PFS_STATE_TMP" "$PFS_STATE_FILE" || { rm -f "$PFS_STATE_TMP"; return 1; }
   PFS_CONFIG_BACKEND="module-file"
 
   if [ "${PFS_SKIP_KSU_CONFIG:-0}" != "1" ] && [ -x "$PFS_KSUD" ]; then
@@ -208,4 +323,5 @@ pfs_write_selection() {
       PFS_CONFIG_BACKEND="kernelsu-config"
     fi
   fi
+  return 0
 }

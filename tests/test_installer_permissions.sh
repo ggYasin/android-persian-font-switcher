@@ -19,12 +19,12 @@ make_fake_rom() {
   cat >"$TEST_ROOT/system/etc/fonts.xml" <<'EOF'
 <familyset>
   <family lang="und-Arab" variant="compact">
-    <font>NotoNaskhArabicUI-Regular.ttf</font>
-    <font>NotoNaskhArabicUI-Bold.ttf</font>
+    <font weight="400" style="normal">NotoNaskhArabicUI-Regular.ttf</font>
+    <font weight="700" style="normal">NotoNaskhArabicUI-Bold.ttf</font>
   </family>
   <family lang="und-Arab" variant="elegant">
-    <font>NotoNaskhArabic-Regular.ttf</font>
-    <font>NotoNaskhArabic-Bold.ttf</font>
+    <font weight="400" style="normal">NotoNaskhArabic-Regular.ttf</font>
+    <font weight="700" style="normal">NotoNaskhArabic-Bold.ttf</font>
   </family>
 </familyset>
 EOF
@@ -129,6 +129,67 @@ cmp "$MODPATH/assets/fonts/vazirmatn/bold.ttf" "$MODPATH/system/fonts/NotoNaskhA
 [ ! -e "$MODPATH/state/install-apply.log" ]
 [ ! -e "$MODPATH/skip_mount" ]
 
+# The installer proves filename/weight membership inside the relevant family,
+# rather than accepting the same strings elsewhere in fonts.xml.
+run_install_case wrong-weight-layout
+sed -i '0,/weight="400"/s//weight="500"/' "$TEST_ROOT/system/etc/fonts.xml"
+WRONG_WEIGHT_LOG="$SANDBOX/wrong-weight.log"
+if sh "$SANDBOX/wrong-weight-layout/run-customize.sh" >"$WRONG_WEIGHT_LOG" 2>&1; then
+  echo "Installer accepted the wrong compact Regular weight" >&2
+  exit 1
+fi
+grep -q 'exact und-Arab compact Regular 400/Bold 700' "$WRONG_WEIGHT_LOG"
+
+run_install_case unrelated-family-layout
+sed -i 's/<family lang="und-Arab" variant="compact">/<family lang="fa" variant="compact">/' "$TEST_ROOT/system/etc/fonts.xml"
+UNRELATED_LOG="$SANDBOX/unrelated-family.log"
+if sh "$SANDBOX/unrelated-family-layout/run-customize.sh" >"$UNRELATED_LOG" 2>&1; then
+  echo "Installer accepted target names outside an und-Arab compact family" >&2
+  exit 1
+fi
+grep -q 'exact und-Arab compact Regular 400/Bold 700' "$UNRELATED_LOG"
+
+run_install_case lookalike-attribute-layout
+sed -i 's/<family lang="und-Arab" variant="compact">/<family notlang="und-Arab" variant="compact">/' \
+  "$TEST_ROOT/system/etc/fonts.xml"
+LOOKALIKE_LOG="$SANDBOX/lookalike-attribute.log"
+if sh "$SANDBOX/lookalike-attribute-layout/run-customize.sh" >"$LOOKALIKE_LOG" 2>&1; then
+  echo "Installer accepted a lookalike attribute name as lang" >&2
+  exit 1
+fi
+grep -q 'exact und-Arab compact Regular 400/Bold 700' "$LOOKALIKE_LOG"
+
+run_install_case named-family-layout
+sed -i 's/<family lang="und-Arab" variant="compact">/<family name="decoy" lang="und-Arab" variant="compact">/' \
+  "$TEST_ROOT/system/etc/fonts.xml"
+NAMED_LOG="$SANDBOX/named-family.log"
+if sh "$SANDBOX/named-family-layout/run-customize.sh" >"$NAMED_LOG" 2>&1; then
+  echo "Installer accepted a named family as the unnamed Arabic fallback" >&2
+  exit 1
+fi
+grep -q 'exact und-Arab compact Regular 400/Bold 700' "$NAMED_LOG"
+
+run_install_case filename-substring-layout
+sed -i 's/NotoNaskhArabicUI-Regular\.ttf</prefix-NotoNaskhArabicUI-Regular.ttf.bak</' \
+  "$TEST_ROOT/system/etc/fonts.xml"
+SUBSTRING_LOG="$SANDBOX/filename-substring.log"
+if sh "$SANDBOX/filename-substring-layout/run-customize.sh" >"$SUBSTRING_LOG" 2>&1; then
+  echo "Installer accepted a target filename substring instead of an exact text node" >&2
+  exit 1
+fi
+grep -q 'exact und-Arab compact Regular 400/Bold 700' "$SUBSTRING_LOG"
+
+# Attribute order, whitespace, and single quotes are harmless XML variations.
+run_install_case reordered-attribute-layout
+sed -i \
+  -e "s/<family lang=\"und-Arab\" variant=\"compact\">/<family variant='compact' lang='und-Arab'>/" \
+  -e "s/<family lang=\"und-Arab\" variant=\"elegant\">/<family variant='elegant' lang='und-Arab'>/" \
+  -e "s/weight=\"400\" style=\"normal\"/style='normal' weight='400'/g" \
+  -e "s/weight=\"700\" style=\"normal\"/style='normal' weight='700'/g" \
+  "$TEST_ROOT/system/etc/fonts.xml"
+sh "$SANDBOX/reordered-attribute-layout/run-customize.sh" >/dev/null 2>&1
+[ ! -e "$MODPATH/skip_mount" ]
+
 # A valid persistent custom font survives a module update and gets fresh,
 # read-only WebUI preview copies in the newly extracted module tree.
 run_install_case valid-persistent-data
@@ -141,6 +202,22 @@ grep -q '^  copied=1$' "$VALID_LOG"
 cmp "$VALID_ORIGINAL/regular.ttf" "$MODPATH/webroot/custom-fonts/$CUSTOM_ID/regular.ttf"
 cmp "$VALID_ORIGINAL/bold.ttf" "$MODPATH/webroot/custom-fonts/$CUSTOM_ID/bold.ttf"
 [ -f "$VALID_ORIGINAL/name.b64" ]
+
+# An unsafe diagnostic path is ignored rather than followed; preview recovery
+# remains best-effort and does not chmod or write through the symlink.
+run_install_case unsafe-quarantine-path
+make_valid_persistent_font
+EXTERNAL_QUARANTINE="$TEST_ROOT/external-quarantine"
+mkdir "$EXTERNAL_QUARANTINE"
+chmod 0755 "$EXTERNAL_QUARANTINE"
+printf '%s\n' preserve >"$EXTERNAL_QUARANTINE/marker"
+ln -s "$EXTERNAL_QUARANTINE" "$TEST_ROOT/data/adb/persian_font_switcher/quarantine"
+QUARANTINE_LOG="$SANDBOX/unsafe-quarantine.log"
+sh "$SANDBOX/unsafe-quarantine-path/run-customize.sh" >"$QUARANTINE_LOG" 2>&1
+grep -q '^  code=previews-restored$' "$QUARANTINE_LOG"
+[ "$(stat -c '%a' "$EXTERNAL_QUARANTINE")" = 755 ]
+[ "$(sed -n '1p' "$EXTERNAL_QUARANTINE/marker")" = preserve ]
+[ ! -e "$EXTERNAL_QUARANTINE/skipped-custom-data.log" ]
 
 # Corrupt metadata/font state is skipped without deleting or moving originals.
 run_install_case corrupt-persistent-data
@@ -158,18 +235,18 @@ grep -q "^  skipped_custom=$CUSTOM_ID$" "$CORRUPT_LOG"
 grep -q "$CUSTOM_ID: invalid, incompatible, or unreadable; original preserved in place" \
   "$TEST_ROOT/data/adb/persian_font_switcher/quarantine/skipped-custom-data.log"
 
-# Legacy data and a stale lock are recoverable and stay untouched.
+# Legacy data and an owner-identified dead directory lock are recoverable.
 run_install_case stale-persistent-data
 STALE_ROOT="$TEST_ROOT/data/adb/persian_font_switcher"
 mkdir -p "$STALE_ROOT/custom-fonts/legacy-font" "$STALE_ROOT/.preview-sync-lock"
 printf '%s\n' legacy >"$STALE_ROOT/custom-fonts/legacy-font/README"
+printf '%s\n' 99999999 >"$STALE_ROOT/.preview-sync-lock/pid"
 STALE_LOG="$SANDBOX/stale-persistent.log"
 sh "$SANDBOX/stale-persistent-data/run-customize.sh" >"$STALE_LOG" 2>&1
 grep -q '^  code=custom-data-skipped$' "$STALE_LOG"
 grep -q '^  recovered_stale_lock=1$' "$STALE_LOG"
 [ -f "$STALE_ROOT/custom-fonts/legacy-font/README" ]
-[ ! -e "$STALE_ROOT/.preview-sync-lock" ]
-find "$STALE_ROOT/quarantine" -maxdepth 1 -type d -name 'stale-preview-sync-lock.*' | grep -q .
+[ -f "$STALE_ROOT/.preview-sync-lock" ]
 [ "$(stat -c '%a' "$MODPATH/scripts/apply-font.sh")" = "755" ]
 [ ! -e "$MODPATH/skip_mount" ]
 
@@ -234,7 +311,7 @@ grep -q '^Initial font apply output (exit 5):$' "$DIAGNOSTIC_LOG"
 grep -q '^  code=font-checksum-mismatch$' "$DIAGNOSTIC_LOG"
 grep -q '^  message=The selected font failed integrity validation\.$' "$DIAGNOSTIC_LOG"
 grep -q "Failed to prepare the initial 'vazirmatn' fallback overlay (exit 5)" "$DIAGNOSTIC_LOG"
-[ -e "$MODPATH/skip_mount" ]
+[ ! -e "$MODPATH/skip_mount" ]
 [ ! -e "$MODPATH/state/install-apply.log" ]
 
 echo "Installer 0644-permission regression tests passed"

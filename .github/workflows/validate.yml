@@ -8,24 +8,63 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - name: Install font validation dependency
-        run: python3 -m pip install 'fonttools>=4.46,<5'
-      - name: Build deterministic module ZIP
-        run: ./scripts/build.sh
-      - name: Validate project, scripts, fonts, WebUI, and ZIP
-        run: ./scripts/validate.sh ./Persian-Font-Switcher-v0.1.0-rc4.zip
-      - name: Write checksum
-        run: sha256sum Persian-Font-Switcher-v0.1.0-rc4.zip > Persian-Font-Switcher-v0.1.0-rc4.zip.sha256
-      - name: Upload validated build
-        uses: actions/upload-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          name: Persian-Font-Switcher-v0.1.0-rc4
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Verify host tool versions
+        run: |
+          python3 -c 'import sys; assert sys.version_info >= (3, 10)'
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)'
+      - name: Install font validation dependency
+        run: python3 -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Build deterministic module ZIP
+        id: build
+        run: |
+          version=$(sed -n 's/^version=//p' module.prop)
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "module.prop version is missing or invalid" >&2
+            exit 1
+          fi
+          archive="Persian-Font-Switcher-v${version}.zip"
+          ./scripts/build.sh "$archive"
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+      - name: Validate project, scripts, fonts, WebUI, and ZIP
+        env:
+          ARCHIVE: ${{ steps.build.outputs.archive }}
+        run: ./scripts/validate.sh "$ARCHIVE"
+      - name: Verify reproducible build
+        env:
+          ARCHIVE: ${{ steps.build.outputs.archive }}
+        run: |
+          second_archive="${RUNNER_TEMP}/second-build.zip"
+          ./scripts/build.sh "$second_archive"
+          cmp "$ARCHIVE" "$second_archive"
+      - name: Write checksum
+        env:
+          ARCHIVE: ${{ steps.build.outputs.archive }}
+        run: sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+      - name: Upload validated build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: validated-${{ github.sha }}
           path: |
-            Persian-Font-Switcher-v0.1.0-rc4.zip
-            Persian-Font-Switcher-v0.1.0-rc4.zip.sha256
+            ${{ steps.build.outputs.archive }}
+            ${{ steps.build.outputs.archive }}.sha256
           if-no-files-found: error
+          retention-days: 14

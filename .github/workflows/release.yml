@@ -1,0 +1,173 @@
+name: Publish validated release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      archive: ${{ steps.version.outputs.archive }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Verify host tool versions
+        run: |
+          python3 -c 'import sys; assert sys.version_info >= (3, 10)'
+          node -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)'
+      - name: Verify tag and module version
+        id: version
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          version_count=$(grep -c '^version=' module.prop || true)
+          if [ "$version_count" -ne 1 ]; then
+            echo "module.prop must contain exactly one version field" >&2
+            exit 1
+          fi
+          version=$(sed -n 's/^version=//p' module.prop)
+          if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "module.prop version is missing or invalid" >&2
+            exit 1
+          fi
+          expected_tag="v${version}"
+          if [ "$TAG_NAME" != "$expected_tag" ]; then
+            echo "Tag $TAG_NAME does not match module version $expected_tag" >&2
+            exit 1
+          fi
+          archive="Persian-Font-Switcher-v${version}.zip"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'archive=%s\n' "$archive" >> "$GITHUB_OUTPUT"
+      - name: Install font validation dependency
+        run: python3 -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Build and validate release
+        env:
+          ARCHIVE: ${{ steps.version.outputs.archive }}
+        run: |
+          release_dir="${RUNNER_TEMP}/release-bundle"
+          mkdir -p "$release_dir"
+          ./scripts/build.sh "$release_dir/$ARCHIVE"
+          ./scripts/validate.sh "$release_dir/$ARCHIVE"
+          (cd "$release_dir" && sha256sum "$ARCHIVE" > "$ARCHIVE.sha256")
+      - name: Verify reproducible release build
+        env:
+          ARCHIVE: ${{ steps.version.outputs.archive }}
+        run: |
+          second_archive="${RUNNER_TEMP}/second-build.zip"
+          ./scripts/build.sh "$second_archive"
+          cmp "${RUNNER_TEMP}/release-bundle/$ARCHIVE" "$second_archive"
+      - name: Extract release notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          awk -v heading="## $VERSION" '
+            $0 == heading { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > "${RUNNER_TEMP}/release-bundle/release-notes.md"
+          test -s "${RUNNER_TEMP}/release-bundle/release-notes.md"
+      - name: Upload validated release bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ github.sha }}
+          path: ${{ runner.temp }}/release-bundle/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download validated release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-${{ github.sha }}
+          path: release-artifacts
+      - name: Verify downloaded release bundle
+        working-directory: release-artifacts
+        env:
+          ARCHIVE: ${{ needs.build-validate.outputs.archive }}
+        run: |
+          test -f "$ARCHIVE"
+          test -f "$ARCHIVE.sha256"
+          test -s release-notes.md
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 3
+          sha256sum -c "$ARCHIVE.sha256"
+      - name: Publish GitHub release
+        working-directory: release-artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+          VERSION: ${{ needs.build-validate.outputs.version }}
+          ARCHIVE: ${{ needs.build-validate.outputs.archive }}
+        run: |
+          is_prerelease=false
+          case "$VERSION" in
+            *-*) is_prerelease=true ;;
+          esac
+
+          release_state=$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft 2>/dev/null || true)
+          case "$release_state" in
+            true)
+              gh release edit "$TAG_NAME" \
+                --draft=true \
+                --prerelease="$is_prerelease" \
+                --title "Persian Font Switcher $TAG_NAME" \
+                --notes-file release-notes.md
+              ;;
+            false)
+              echo "Release $TAG_NAME is already published; refusing to replace its assets." >&2
+              exit 1
+              ;;
+            '')
+              create_flags=(
+                --draft
+                --verify-tag
+                --title "Persian Font Switcher $TAG_NAME"
+                --notes-file release-notes.md
+              )
+              if [ "$is_prerelease" = true ]; then
+                create_flags+=(--prerelease)
+              fi
+              gh release create "$TAG_NAME" "${create_flags[@]}"
+              ;;
+            *)
+              echo "Unexpected existing release state: $release_state" >&2
+              exit 1
+              ;;
+          esac
+
+          gh release upload "$TAG_NAME" "$ARCHIVE" "$ARCHIVE.sha256" --clobber
+          expected_assets=$(printf '%s\n' "$ARCHIVE" "$ARCHIVE.sha256" | sort)
+          draft_assets=$(gh release view "$TAG_NAME" --json assets --jq '.assets[].name' | sort)
+          if [ "$draft_assets" != "$expected_assets" ]; then
+            echo "Draft release assets differ from the validated bundle; leaving the release unpublished." >&2
+            exit 1
+          fi
+          gh release edit "$TAG_NAME" --draft=false --prerelease="$is_prerelease"

@@ -1,6 +1,6 @@
 # Third-party font notices
 
-Module code and documentation are MIT licensed. Font software retains its upstream license. Exact Regular/Bold and source-archive SHA-256 values are pinned in [`webroot/font-manifest.json`](webroot/font-manifest.json); each license is shipped at the manifest's `licensePath`.
+Module code and documentation are MIT licensed. Font software retains its upstream license. Exact Regular/Bold SHA-256 values plus a source-archive SHA-256 or source commit are pinned in [`webroot/font-manifest.json`](webroot/font-manifest.json); each license is shipped at the manifest's `licensePath`.
 
 | Font | Version | Author/project | Official source | License |
 | --- | --- | --- | --- | --- |

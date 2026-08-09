@@ -3,10 +3,21 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
-OUTPUT=${1:-"$PROJECT_DIR/Persian-Font-Switcher-v0.1.0-rc4.zip"}
+VERSION=$(sed -n 's/^version=//p' "$PROJECT_DIR/module.prop")
+printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' \
+  || { echo "module.prop version is missing or invalid" >&2; exit 1; }
+for REQUIRED_COMMAND in python3 zip sha256sum; do
+  command -v "$REQUIRED_COMMAND" >/dev/null 2>&1 \
+    || { echo "Required build command is missing: $REQUIRED_COMMAND" >&2; exit 1; }
+done
+OUTPUT=${1:-"$PROJECT_DIR/Persian-Font-Switcher-v$VERSION.zip"}
+case "$OUTPUT" in
+  /*) ;;
+  *) OUTPUT="$(pwd -P)/$OUTPUT" ;;
+esac
 FILE_LIST="$PROJECT_DIR/scripts/payload-files.txt"
 STAGE=$(mktemp -d)
-trap 'rm -rf -- "$STAGE"' EXIT HUP INT TERM
+trap 'rm -rf -- "$STAGE"' 0 HUP INT TERM
 
 python3 "$PROJECT_DIR/tests/validate_project.py" --source-only
 

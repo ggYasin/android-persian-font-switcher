@@ -7,6 +7,11 @@ PFS_ADB_ROOT="${PFS_TEST_ADB_ROOT:-/data/adb}"
 FONT_CONFIG="$PFS_SYSTEM_ROOT/etc/fonts.xml"
 DEVICE_API="${API:-$(getprop ro.build.version.sdk 2>/dev/null)}"
 
+for REQUIRED_APPLET in awk base64 flock od sha256sum sync; do
+  command -v "$REQUIRED_APPLET" >/dev/null 2>&1 \
+    || abort "Required Android command is unavailable: $REQUIRED_APPLET"
+done
+
 check_conflict_dir() {
   CONFLICT_DIR="$1"
   [ -d "$CONFLICT_DIR" ] || return 0
@@ -48,28 +53,101 @@ case "$DEVICE_API" in
 esac
 
 if [ ! -f "$FONT_CONFIG" ]; then
-  abort "Active Android font configuration is absent: $FONT_CONFIG"
+  abort "Base Android font configuration is absent: $FONT_CONFIG"
+fi
+
+font_config_has_family() {
+  PFS_WANTED_VARIANT=$1
+  PFS_WANTED_REGULAR=$2
+  PFS_WANTED_BOLD=$3
+  awk -v wanted_variant="$PFS_WANTED_VARIANT" \
+    -v wanted_regular="$PFS_WANTED_REGULAR" \
+    -v wanted_bold="$PFS_WANTED_BOLD" -v sq="'" '
+    function attr(text, key, value, pattern) {
+      pattern = "(^|[[:space:]])" key "[[:space:]]*=[[:space:]]*(\"|" sq ")" value "(\"|" sq ")"
+      return text ~ pattern
+    }
+    function has_attr(text, key) {
+      return text ~ ("(^|[[:space:]])" key "[[:space:]]*=")
+    }
+    function trim(text) {
+      sub(/^[[:space:]]+/, "", text)
+      sub(/[[:space:]]+$/, "", text)
+      return text
+    }
+    function font_entry(block, filename, weight, entries, count, index_, entry, start_, opening, body) {
+      count = split(block, entries, "</font>")
+      for (index_ = 1; index_ <= count; index_++) {
+        entry = entries[index_]
+        start_ = match(entry, /<font[[:space:]>]/)
+        if (!start_) continue
+        entry = substr(entry, start_)
+        opening = substr(entry, 1, index(entry, ">"))
+        body = substr(entry, length(opening) + 1)
+        sub(/<.*/, "", body)
+        if (trim(body) == filename && attr(opening, "weight", weight) \
+          && (!has_attr(opening, "style") || attr(opening, "style", "normal"))) return 1
+      }
+      return 0
+    }
+    function family_matches(block, opening) {
+      opening = substr(block, 1, index(block, ">"))
+      return attr(opening, "lang", "und-Arab") \
+        && attr(opening, "variant", wanted_variant) \
+        && !has_attr(opening, "name") \
+        && font_entry(block, wanted_regular, "400") \
+        && font_entry(block, wanted_bold, "700")
+    }
+    {
+      xml = xml " " $0
+    }
+    END {
+      while (match(xml, /<!--/)) {
+        before = substr(xml, 1, RSTART - 1)
+        tail = substr(xml, RSTART + 4)
+        close_comment = index(tail, "-->")
+        if (!close_comment) { xml = before; break }
+        xml = before substr(tail, close_comment + 3)
+      }
+      rest = xml
+      while (match(rest, /<family[[:space:]>]/)) {
+        rest = substr(rest, RSTART)
+        close_family = index(rest, "</family>")
+        if (!close_family) exit 1
+        block = substr(rest, 1, close_family + 8)
+        if (family_matches(block)) exit 0
+        rest = substr(rest, close_family + 9)
+      }
+      exit 1
+    }
+  ' "$FONT_CONFIG"
+}
+
+if ! font_config_has_family compact NotoNaskhArabicUI-Regular.ttf NotoNaskhArabicUI-Bold.ttf; then
+  abort "Unsupported ROM font configuration: the exact und-Arab compact Regular 400/Bold 700 fallback family is absent."
+fi
+if ! font_config_has_family elegant NotoNaskhArabic-Regular.ttf NotoNaskhArabic-Bold.ttf; then
+  abort "Unsupported ROM font configuration: the exact und-Arab elegant Regular 400/Bold 700 fallback family is absent."
 fi
 
 mkdir -p "$MODPATH/state"
 TARGETS_FILE="$MODPATH/state/supported-targets"
-: >"$TARGETS_FILE"
-
-if ! grep -q 'lang="und-Arab"' "$FONT_CONFIG"; then
-  abort "Unsupported ROM font configuration: the AOSP und-Arab fallback family is absent."
-fi
-
+TARGETS_TMP="$MODPATH/state/.supported-targets.$$"
+: >"$TARGETS_TMP"
 for FONT_NAME in \
   NotoNaskhArabicUI-Regular.ttf \
   NotoNaskhArabicUI-Bold.ttf \
   NotoNaskhArabic-Regular.ttf \
   NotoNaskhArabic-Bold.ttf
 do
-  if [ ! -f "$PFS_SYSTEM_ROOT/fonts/$FONT_NAME" ] || ! grep -q "$FONT_NAME" "$FONT_CONFIG"; then
-    abort "Unsupported ROM font layout: expected active fallback is absent: $FONT_NAME"
+  if [ ! -f "$PFS_SYSTEM_ROOT/fonts/$FONT_NAME" ]; then
+    rm -f "$TARGETS_TMP"
+    abort "Unsupported ROM font layout: expected system font file is absent: $FONT_NAME"
   fi
-  printf '%s\n' "$FONT_NAME" >>"$TARGETS_FILE"
+  printf '%s\n' "$FONT_NAME" >>"$TARGETS_TMP"
 done
+chmod 0600 "$TARGETS_TMP"
+mv -f "$TARGETS_TMP" "$TARGETS_FILE"
 
 ui_print "Detected complete AOSP compact/elegant Arabic fallback layout."
 

@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose a backward-compatible usability, compatibility, or hardening improvement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and failure considerations
+      description: Explain effects on the four-target overlay, mount providers, reboot behavior, and unsupported ROMs.
+    validations:
+      required: true

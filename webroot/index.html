@@ -25,11 +25,16 @@
         <div class="status-item"><span>Active in global mount</span><strong id="active-font">Loading…</strong></div>
         <div class="status-item"><span>Selected for restart</span><strong id="selected-font">Loading…</strong></div>
         <div class="status-item"><span>FontLoader</span><strong id="fontloader-status">Checking…</strong></div>
+        <div class="status-item"><span>ROM layout</span><strong id="layout-status">Checking…</strong></div>
         <span id="restart-badge" class="badge hidden">Restart required</span>
       </section>
-      <p id="fontloader-guidance" class="fontloader-guidance"></p>
+      <div class="status-actions">
+        <p id="fontloader-guidance" class="fontloader-guidance"></p>
+        <button id="refresh-button" class="secondary-button compact-button" type="button" disabled>Refresh status</button>
+      </div>
 
-      <div id="notice" class="notice hidden" role="status" aria-live="polite"></div>
+      <div id="notice" class="notice hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div id="error-notice" class="notice error hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
 
       <section class="controls" aria-labelledby="font-list-heading">
         <div>
@@ -41,8 +46,10 @@
           <input id="font-search" type="search" placeholder="Search fonts or authors" autocomplete="off">
         </label>
       </section>
+      <p id="result-count" class="result-count" aria-live="polite"></p>
 
-      <div id="font-list" class="font-list" aria-busy="true"></div>
+      <div id="font-list" class="font-list" role="radiogroup" aria-labelledby="font-list-heading" aria-busy="true"></div>
+      <p id="empty-state" class="empty-state hidden">No fonts match this search.</p>
 
       <section class="apply-bar" aria-live="polite">
         <div><span class="status-label">Chosen</span><strong id="chosen-font">Loading…</strong></div>
@@ -55,7 +62,7 @@
           <p>The mount provider must rebuild the four systemless font overlays before Android processes load their one-shot font maps. Restarting only SystemUI is not sufficient.</p>
         </div>
         <div class="button-row">
-          <button id="reboot-button" class="danger-button" type="button">Reboot now</button>
+          <button id="reboot-button" class="danger-button" type="button" disabled>Reboot now</button>
           <button id="later-button" class="secondary-button" type="button">Later</button>
         </div>
       </section>
@@ -64,15 +71,20 @@
         <p class="eyebrow">Your fonts</p>
         <h2 id="import-heading">Import a custom family</h2>
         <p class="small-note">Choose licensed Regular and Bold TTF/OTF files. Files are validated locally and persist in the module-owned data directory across updates.</p>
-        <label>Display name<input id="custom-name" type="text" maxlength="60" placeholder="My Persian font"></label>
+        <label>Display name<input id="custom-name" type="text" maxlength="80" placeholder="My Persian font" disabled></label>
         <div class="file-grid">
-          <label>Regular<input id="custom-regular" type="file" accept=".ttf,.otf,font/ttf,font/otf"></label>
-          <label>Bold<input id="custom-bold" type="file" accept=".ttf,.otf,font/ttf,font/otf"></label>
+          <label>Regular<input id="custom-regular" type="file" accept=".ttf,.otf,font/ttf,font/otf" disabled></label>
+          <label>Bold<input id="custom-bold" type="file" accept=".ttf,.otf,font/ttf,font/otf" disabled></label>
         </div>
         <div id="custom-preview" class="custom-preview hidden" dir="rtl">سلام، می‌روم خانه؛ برنامه‌نویسی ۱۲۳۴۵۶۷۸۹۰</div>
-        <button id="import-button" type="button">Validate and import</button>
-        <p id="import-support" class="small-note"></p>
+        <button id="import-button" type="button" disabled>Validate and import</button>
+        <p id="import-support" class="small-note" aria-live="polite"></p>
       </section>
+
+      <details class="requirements-panel">
+        <summary>Compatibility requirements</summary>
+        <p>Requires Android 12–16 with the exact four-file AOSP <code>und-Arab</code> compact/elegant layout, KernelSU Next, a compatible systemless mount provider, and a reboot after applying. Custom import additionally requires Manager v3.1.0+.</p>
+      </details>
 
       <footer>
         <p>No network, telemetry, daemon, font hook, or physical system write.</p>
