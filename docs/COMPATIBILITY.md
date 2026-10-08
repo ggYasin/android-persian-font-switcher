@@ -31,27 +31,21 @@ The WebUI is built against KernelSU Next Manager v3.3.0 (33214) and requires a w
 
 The ZIP follows Magisk-style module structure. Magisk can provide the static systemless overlay, but Magisk Manager itself does not provide this KernelSU WebUI. Other WebUI hosts are untested and should not be assumed compatible.
 
-## Mount providers
+## Mount providers and root hiding
 
-KernelSU configurations need a compatible provider for module `system/` overlays. The module contains no mount implementation and never installs or configures a provider.
+Since 0.3.0 the module ships no `system/` payload, so no metamodule mounts anything for it. Magic Mount-rs or another provider can stay installed for other modules; its `umount` setting does not affect this module.
 
-Dynamic switching is designed for providers that inspect `/data/adb/modules/<id>/system` at boot. Current Magic Mount-rs follows this model and honors `skip_mount`, so it is a known compatible example.
+Activation is a short-lived bind mount inside `system_server`'s own mount namespace only. It is created with `nsenter` after `system_server` has unshared from zygote, and it is removed as soon as FontManagerService has built its font map, before apps start. NeoZygisk moves apps it does not hide into a copy of `system_server`'s live namespace, so a persistent bind would reach them; the transient one does not. KernelSU's per-app "umount modules" profiles, NeoZygisk's denylist, and SUSFS settings can stay as they are. The module uses no Zygisk component and no SUSFS feature.
 
-Some overlayfs metamodules copy module payloads into a separate provider-owned content directory during installation. Editing the original module directory later may not update their effective overlay. This module does not write provider-owned paths, so post-install switching is not claimed for that design.
+Apps that render Persian map the selected font from `/data/fonts/persian_font_switcher/gen/<N>/`, the same kind of `/data/fonts` path Android's updatable fonts use. Apps that parse `/system/etc/fonts.xml` themselves (for example Flutter) see the stock file and keep the stock fallback.
 
-System Default uses KernelSU's standard `skip_mount` marker, which keeps the WebUI installed while telling compatible providers not to mount this module's `system/` payload.
+## Restart behavior
 
-The project does not store copies or trusted baselines of ROM fonts. Effective hashes that do not match a bundled/custom family are therefore reported as `unknown` (“System default or unrecognized”), even when System Default is selected. This avoids turning saved state into a false active-font claim.
-
-## Runtime refresh
-
-The module does not offer Restart SystemUI or soft Android restart. crDroid's current font picker [switches a preinstalled Runtime Resource Overlay and then calls its SystemUI restart helper](https://github.com/crdroidandroid/android_packages_apps_crDroidSettings/blob/07664c875678f548450f788f319044ee09174f5c/src/com/crdroid/settings/preferences/FontsPickerPreference.kt#L181-L227); its framework helper ultimately [asks `IStatusBarService` to restart SystemUI](https://github.com/crdroidandroid/android_frameworks_base/blob/708e793e39322960e8f61edf2028aa30b07901fe/core/java/com/android/internal/util/crdroid/Utils.java#L85-L91). crDroid's `FontController` then [selects a named family already present in the system font map](https://github.com/crdroidandroid/android_frameworks_base/blob/708e793e39322960e8f61edf2028aa30b07901fe/core/java/com/android/internal/util/android/FontController.java#L201-L229). That path is not a font-file refresh service.
-
-[Current Magic Mount-rs instead bind-mounts each boot-time source](https://github.com/Tools-cx-app/meta-magic_mount-rs/blob/2e42e64f9d5054ec9f4ac313a931d331643a5ab8/src/magic_mount/mod.rs#L91-L135) and exposes no supported module-specific live-remount command. Replacing this module's source directory cannot retarget the existing bind to the new inode. Android's [`Typeface` system font map is one-shot within a process](https://android.googlesource.com/platform/frameworks/base/+/android16-release/graphics/java/android/graphics/Typeface.java#1537), [`SystemFonts` mmap font files](https://android.googlesource.com/platform/frameworks/base/+/android16-release/graphics/java/android/graphics/fonts/SystemFonts.java#118), and zygote can prewarm path-keyed font data for the current locale. Restarting SystemUI would therefore leave the new four-file overlay pending and cannot refresh existing apps. A zygote restart is disruptive and still does not replace the pinned mount. Android's own `cmd font restart` implementation [labels itself unsafe and intended only for testing](https://github.com/crdroidandroid/android_frameworks_base/blob/708e793e39322960e8f61edf2028aa30b07901fe/services/core/java/com/android/server/graphics/fonts/FontManagerShellCommand.java#L118-L122). A normal reboot is the only supported provider-agnostic apply path.
+A reboot is the recommended apply path. Apply now rebuilds the font map with `cmd font restart` and restarts SystemUI and the launcher; other apps receive the new map when they next start. This is safe here because earlier font generations stay on disk until the next boot.
 
 ## FontLoader
 
-The external FontLoader module uses ID `fontloader`. The WebUI reports enabled, disabled, pending install/removal, or not detected by inspecting standard module markers. It does not install or change FontLoader. Individual app mount namespaces can still differ from the PID 1/global active state, which is exactly the Android 12+ lazy-loading case FontLoader is designed to mitigate.
+FontLoader (module ID `fontloader`) is not needed. It replaces already-mapped fonts in app memory with `mmap(MAP_FIXED)` from an ashmem copy sized to the module font; when the app had mapped the larger stock font, the kernel rejects the mapping after the old one was already removed, and the first Persian glyph crashes the app. The WebUI reports its state and recommends removal; this module never installs, enables, disables, or configures it.
 
 ## App behavior
 

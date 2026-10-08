@@ -8,12 +8,30 @@ trap 'rm -rf -- "$SANDBOX"' EXIT HUP INT TERM
 
 MODULE="$SANDBOX/module"
 DATA="$SANDBOX/data"
-mkdir -p "$MODULE/scripts" "$MODULE/webroot" "$MODULE/state" "$MODULE/system/fonts"
+mkdir -p "$MODULE/scripts" "$MODULE/webroot" "$MODULE/state" "$SANDBOX/fonts" "$SANDBOX/system/etc"
 cp -R "$PROJECT_DIR/assets" "$MODULE/assets"
 cp "$PROJECT_DIR/scripts/"*.sh "$MODULE/scripts/"
 cp "$PROJECT_DIR/webroot/font-manifest.json" "$MODULE/webroot/"
 cp "$PROJECT_DIR/state/supported-targets" "$PROJECT_DIR/state/selected-font" "$MODULE/state/"
-cp "$PROJECT_DIR/system/fonts/"*.ttf "$MODULE/system/fonts/"
+# Applying stages copies under a sandboxed /data/fonts root and patches a fake
+# ROM font configuration; ownership/label changes are no-ops off-device.
+cat >"$SANDBOX/system/etc/font_fallback.xml" <<'XML'
+<familyset>
+  <family lang="und-Arab" variant="elegant">
+    <font weight="400" style="normal" postScriptName="NotoNaskhArabic">NotoNaskhArabic-Regular.ttf</font>
+    <font weight="700" style="normal">NotoNaskhArabic-Bold.ttf</font>
+  </family>
+  <family lang="und-Arab" variant="compact">
+    <font weight="400" style="normal" postScriptName="NotoNaskhArabicUI">NotoNaskhArabicUI-Regular.ttf</font>
+    <font weight="700" style="normal">NotoNaskhArabicUI-Bold.ttf</font>
+  </family>
+</familyset>
+XML
+PFS_FONT_ROOT="$SANDBOX/fonts/persian_font_switcher"
+PFS_TEST_SYSTEM_ROOT="$SANDBOX/system"
+PFS_CHCON_BIN=true
+PFS_CHOWN_BIN=true
+export PFS_FONT_ROOT PFS_TEST_SYSTEM_ROOT PFS_CHCON_BIN PFS_CHOWN_BIN
 
 run_import() {
   PFS_MODULE_DIR="$MODULE" PFS_DATA_DIR="$DATA" sh "$MODULE/scripts/import-font.sh" "$@"
@@ -62,10 +80,12 @@ cmp "$CUSTOM_DIR/bold.ttf" "$MODULE/assets/fonts/mikhak/bold.ttf"
 
 PFS_MODULE_DIR="$MODULE" PFS_DATA_DIR="$DATA" PFS_SKIP_KSU_CONFIG=1 \
   sh "$MODULE/scripts/apply-font.sh" "$CUSTOM_ID" | grep -q '^status=ok$'
-cmp "$CUSTOM_DIR/regular.ttf" "$MODULE/system/fonts/NotoNaskhArabicUI-Regular.ttf"
-cmp "$CUSTOM_DIR/regular.ttf" "$MODULE/system/fonts/NotoNaskhArabic-Regular.ttf"
-cmp "$CUSTOM_DIR/bold.ttf" "$MODULE/system/fonts/NotoNaskhArabicUI-Bold.ttf"
-cmp "$CUSTOM_DIR/bold.ttf" "$MODULE/system/fonts/NotoNaskhArabic-Bold.ttf"
+CUSTOM_GEN="$PFS_FONT_ROOT/gen/$(sed -n '1p' "$PFS_FONT_ROOT/generation")"
+cmp "$CUSTOM_DIR/regular.ttf" "$CUSTOM_GEN/NotoNaskhArabicUI-Regular.ttf"
+cmp "$CUSTOM_DIR/regular.ttf" "$CUSTOM_GEN/NotoNaskhArabic-Regular.ttf"
+cmp "$CUSTOM_DIR/bold.ttf" "$CUSTOM_GEN/NotoNaskhArabicUI-Bold.ttf"
+cmp "$CUSTOM_DIR/bold.ttf" "$CUSTOM_GEN/NotoNaskhArabic-Bold.ttf"
+grep -q "gen/${CUSTOM_GEN##*/}/NotoNaskhArabicUI-Regular.ttf" "$PFS_FONT_ROOT/xml/${CUSTOM_GEN##*/}/font_fallback.xml"
 
 if run_import begin '../../escape' >/dev/null 2>&1; then
   echo "Import accepted a path traversal token" >&2

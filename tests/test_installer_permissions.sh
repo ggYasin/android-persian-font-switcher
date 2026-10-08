@@ -78,7 +78,8 @@ run_install_case() {
   make_runner "$CASE_DIR/run-customize.sh"
 
   # Simulate KernelSU Next extracting ordinary ZIP payload scripts as 0644.
-  chmod 0644 "$MODPATH/customize.sh" "$MODPATH/scripts/"*.sh
+  chmod 0644 "$MODPATH/customize.sh" "$MODPATH/post-fs-data.sh" "$MODPATH/service.sh" \
+    "$MODPATH/boot-completed.sh" "$MODPATH/uninstall.sh" "$MODPATH/scripts/"*.sh
 
   export MODPATH API=36
   export PFS_TEST_SYSTEM_ROOT="$TEST_ROOT/system"
@@ -115,17 +116,19 @@ grep -q '^Initial font apply output (exit 0):$' "$SUCCESS_LOG"
 grep -q '^  status=ok$' "$SUCCESS_LOG"
 grep -q '^  selected=vazirmatn$' "$SUCCESS_LOG"
 
-for SCRIPT in "$MODPATH/customize.sh" "$MODPATH/scripts/"*.sh; do
+for SCRIPT in "$MODPATH/customize.sh" "$MODPATH/post-fs-data.sh" "$MODPATH/service.sh" \
+  "$MODPATH/boot-completed.sh" "$MODPATH/uninstall.sh" "$MODPATH/scripts/"*.sh; do
   [ "$(stat -c '%a' "$SCRIPT")" = "755" ] || {
     echo "Installed runtime script is not 0755: $SCRIPT" >&2
     exit 1
   }
 done
 
-cmp "$MODPATH/assets/fonts/vazirmatn/regular.ttf" "$MODPATH/system/fonts/NotoNaskhArabicUI-Regular.ttf"
-cmp "$MODPATH/assets/fonts/vazirmatn/regular.ttf" "$MODPATH/system/fonts/NotoNaskhArabic-Regular.ttf"
-cmp "$MODPATH/assets/fonts/vazirmatn/bold.ttf" "$MODPATH/system/fonts/NotoNaskhArabicUI-Bold.ttf"
-cmp "$MODPATH/assets/fonts/vazirmatn/bold.ttf" "$MODPATH/system/fonts/NotoNaskhArabic-Bold.ttf"
+# Installation only records the verified selection; nothing mountable is
+# created and nothing is staged outside the module until boot.
+[ "$(sed -n '1p' "$MODPATH/state/selected-font")" = vazirmatn ]
+grep -q '^  generation=none$' "$SUCCESS_LOG"
+[ ! -e "$MODPATH/system" ]
 [ ! -e "$MODPATH/state/install-apply.log" ]
 [ ! -e "$MODPATH/skip_mount" ]
 
@@ -178,6 +181,30 @@ if sh "$SANDBOX/filename-substring-layout/run-customize.sh" >"$SUBSTRING_LOG" 2>
   exit 1
 fi
 grep -q 'exact und-Arab compact Regular 400/Bold 700' "$SUBSTRING_LOG"
+
+# An enabled module overlaying the ROM font XML that the redirect patches is a
+# conflict, as is one replacing /system/etc.
+run_install_case font-xml-conflict
+mkdir -p "$TEST_ROOT/data/adb/modules/other_fonts/system/etc"
+printf '%s\n' '<familyset/>' >"$TEST_ROOT/data/adb/modules/other_fonts/system/etc/font_fallback.xml"
+XML_CONFLICT_LOG="$SANDBOX/font-xml-conflict.log"
+if sh "$SANDBOX/font-xml-conflict/run-customize.sh" >"$XML_CONFLICT_LOG" 2>&1; then
+  echo "Installer accepted a module overlaying the ROM font XML" >&2
+  exit 1
+fi
+grep -q "Enabled module 'other_fonts' also overlays /system/etc/font_fallback.xml" "$XML_CONFLICT_LOG"
+: >"$TEST_ROOT/data/adb/modules/other_fonts/disable"
+sh "$SANDBOX/font-xml-conflict/run-customize.sh" >/dev/null 2>&1
+
+run_install_case etc-replace-conflict
+mkdir -p "$TEST_ROOT/data/adb/modules/etc_replacer/system/etc"
+: >"$TEST_ROOT/data/adb/modules/etc_replacer/system/etc/.replace"
+ETC_REPLACE_LOG="$SANDBOX/etc-replace-conflict.log"
+if sh "$SANDBOX/etc-replace-conflict/run-customize.sh" >"$ETC_REPLACE_LOG" 2>&1; then
+  echo "Installer accepted a module replacing /system/etc" >&2
+  exit 1
+fi
+grep -q "Enabled module 'etc_replacer' replaces /system/etc" "$ETC_REPLACE_LOG"
 
 # Attribute order, whitespace, and single quotes are harmless XML variations.
 run_install_case reordered-attribute-layout
@@ -295,7 +322,7 @@ grep -q '^Initial font apply output (exit 0):$' "$UNEXPECTED_LOG"
 [ ! -e "$MODPATH/skip_mount" ]
 
 # A failed apply must expose the trusted script's concrete code/message while
-# still aborting installation and leaving skip_mount enabled.
+# still aborting installation.
 run_install_case diagnostics
 [ "$(stat -c '%a' "$MODPATH/scripts/apply-font.sh")" = "644" ] || {
   echo "Diagnostics precondition failed: apply-font.sh was not 0644 before customize.sh" >&2
@@ -310,7 +337,7 @@ fi
 grep -q '^Initial font apply output (exit 5):$' "$DIAGNOSTIC_LOG"
 grep -q '^  code=font-checksum-mismatch$' "$DIAGNOSTIC_LOG"
 grep -q '^  message=The selected font failed integrity validation\.$' "$DIAGNOSTIC_LOG"
-grep -q "Failed to prepare the initial 'vazirmatn' fallback overlay (exit 5)" "$DIAGNOSTIC_LOG"
+grep -q "Failed to record the initial 'vazirmatn' font selection (exit 5)" "$DIAGNOSTIC_LOG"
 [ ! -e "$MODPATH/skip_mount" ]
 [ ! -e "$MODPATH/state/install-apply.log" ]
 

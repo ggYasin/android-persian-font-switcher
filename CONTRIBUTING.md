@@ -18,7 +18,7 @@ The validator checks font metadata/provenance, licenses, WebUI syntax and SFNT r
 
 - Runtime scripts must remain compatible with Android `/system/bin/sh` and KernelSU's BusyBox environment. Avoid Bash-only syntax and optional host-only utilities.
 - Keep privileged WebUI calls limited to fixed module-local scripts with strict allowlisted arguments. Display names, picker paths, URIs, and manifest prose must never become shell input.
-- Preserve the four-target transaction, `skip_mount` fail-safe, System Default behavior, and normal-reboot requirement unless a separately tested layout/provider design is proposed.
+- Preserve the mount-free design: no `system/` payload, no mount outside `system_server`'s private namespace, the namespace guard, byte-exact XML patching, never-rewritten generations, the boot guard, and System Default behavior, unless a separately tested design is proposed.
 - Do not add live bind mounts, provider-owned path writes, automatic reboot, zygote/SystemUI kill shortcuts, telemetry, or network resources to the WebUI.
 - New device/layout support requires real font-configuration evidence, capability checks, fixtures, application tests, and a documented device report. A marketing name or Android version is not sufficient.
 

@@ -22,8 +22,9 @@
       </header>
 
       <section class="status-panel" aria-live="polite">
-        <div class="status-item"><span>Active in global mount</span><strong id="active-font">Loading…</strong></div>
-        <div class="status-item"><span>Selected for restart</span><strong id="selected-font">Loading…</strong></div>
+        <div class="status-item"><span>Active in apps</span><strong id="active-font">Loading…</strong></div>
+        <div class="status-item"><span>Selected</span><strong id="selected-font">Loading…</strong></div>
+        <div class="status-item"><span>Activation</span><strong id="redirect-status">Checking…</strong></div>
         <div class="status-item"><span>FontLoader</span><strong id="fontloader-status">Checking…</strong></div>
         <div class="status-item"><span>ROM layout</span><strong id="layout-status">Checking…</strong></div>
         <span id="restart-badge" class="badge hidden">Restart required</span>
@@ -59,10 +60,11 @@
       <section id="restart-panel" class="action-panel hidden" aria-labelledby="restart-heading">
         <div>
           <h2 id="restart-heading">Restart required</h2>
-          <p>The mount provider must rebuild the four systemless font overlays before Android processes load their one-shot font maps. Restarting only SystemUI is not sufficient.</p>
+          <p>A reboot rebuilds Android's font map so every app shows the selected font. This is the recommended way to apply. Apply now rebuilds it immediately and restarts SystemUI and the launcher; other open apps update when they are reopened.</p>
         </div>
         <div class="button-row">
           <button id="reboot-button" class="danger-button" type="button" disabled>Reboot now</button>
+          <button id="live-apply-button" class="secondary-button" type="button" disabled>Apply now</button>
           <button id="later-button" class="secondary-button" type="button">Later</button>
         </div>
       </section>
@@ -83,11 +85,11 @@
 
       <details class="requirements-panel">
         <summary>Compatibility requirements</summary>
-        <p>Requires Android 12–16 with the exact four-file AOSP <code>und-Arab</code> compact/elegant layout, KernelSU Next, a compatible systemless mount provider, and a reboot after applying. Custom import additionally requires Manager v3.1.0+.</p>
+        <p>Requires Android 12–16 with the exact four-file AOSP <code>und-Arab</code> compact/elegant layout and KernelSU Next. No mount provider or FontLoader is needed: the font map is redirected only inside <code>system_server</code>, so apps and zygote never see a module mount. Apps that parse <code>fonts.xml</code> themselves (for example Flutter) keep the stock fallback. Custom import additionally requires Manager v3.1.0+.</p>
       </details>
 
       <footer>
-        <p>No network, telemetry, daemon, font hook, or physical system write.</p>
+        <p>No network, telemetry, Zygisk hook, app-visible mount, or physical system write.</p>
         <p>Persian Font Switcher · Yasin Fadaee / @ggYasin</p>
       </footer>
     </main>

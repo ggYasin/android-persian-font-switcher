@@ -14,74 +14,64 @@ else
   LAYOUT=invalid
 fi
 
-HASH_OUTPUT=""
-PFS_NSENTER_BIN=${PFS_NSENTER_BIN:-nsenter}
-if [ -n "${PFS_EFFECTIVE_FONT_DIR:-}" ]; then
-  if HASH_OUTPUT=$(sha256sum \
-    "$PFS_EFFECTIVE_FONT_DIR/NotoNaskhArabicUI-Regular.ttf" \
-    "$PFS_EFFECTIVE_FONT_DIR/NotoNaskhArabic-Regular.ttf" \
-    "$PFS_EFFECTIVE_FONT_DIR/NotoNaskhArabicUI-Bold.ttf" \
-    "$PFS_EFFECTIVE_FONT_DIR/NotoNaskhArabic-Bold.ttf" 2>/dev/null); then
-    ACTIVE_SCOPE=test-root
-  else
-    ACTIVE_SCOPE=unavailable
-    HASH_OUTPUT=""
-  fi
-elif command -v "$PFS_NSENTER_BIN" >/dev/null 2>&1 && [ -r /proc/1/ns/mnt ]; then
-  if HASH_OUTPUT=$("$PFS_NSENTER_BIN" -t 1 -m -- sha256sum \
-    /system/fonts/NotoNaskhArabicUI-Regular.ttf \
-    /system/fonts/NotoNaskhArabic-Regular.ttf \
-    /system/fonts/NotoNaskhArabicUI-Bold.ttf \
-    /system/fonts/NotoNaskhArabic-Bold.ttf 2>/dev/null); then
-    ACTIVE_SCOPE=pid1-mount
-  else
-    ACTIVE_SCOPE=unavailable
-    HASH_OUTPUT=""
-  fi
-else
-  ACTIVE_SCOPE=unavailable
-fi
-
+# "Active" is what FontManagerService served to apps this boot. It is derived
+# from the redirect record of the current system_server and, while
+# verification is pending, the font map SystemUI received. The bind itself is
+# released once the map is built, so it is not evidence either way. It is
+# never derived from the saved selection.
 ACTIVE=unknown
-ACTIVE_REGULAR=$(printf '%s\n' "$HASH_OUTPUT" | sed -n '1s/[[:space:]].*//p')
-ACTIVE_REGULAR_ELEGANT=$(printf '%s\n' "$HASH_OUTPUT" | sed -n '2s/[[:space:]].*//p')
-ACTIVE_BOLD=$(printf '%s\n' "$HASH_OUTPUT" | sed -n '3s/[[:space:]].*//p')
-ACTIVE_BOLD_ELEGANT=$(printf '%s\n' "$HASH_OUTPUT" | sed -n '4s/[[:space:]].*//p')
+ACTIVE_SCOPE=unavailable
+REDIRECT=$(pfs_state_get state 2>/dev/null) || REDIRECT=""
+[ -n "$REDIRECT" ] || REDIRECT=none
+STATE_PID=$(pfs_state_get ss_pid 2>/dev/null) || STATE_PID=""
+STATE_GENERATION=$(pfs_state_get generation 2>/dev/null) || STATE_GENERATION=""
+SS=$(pfs_pid_of system_server)
 
-if [ -n "$ACTIVE_REGULAR" ] \
-  && [ "$ACTIVE_REGULAR" = "$ACTIVE_REGULAR_ELEGANT" ] \
-  && [ -n "$ACTIVE_BOLD" ] \
-  && [ "$ACTIVE_BOLD" = "$ACTIVE_BOLD_ELEGANT" ]; then
-  for FONT_ID in $(sed -n 's/.*"id": "\([a-z0-9_-]*\)".*/\1/p' "$PFS_MANIFEST"); do
-    [ "$FONT_ID" = system-default ] && continue
-    if pfs_resolve_font "$FONT_ID" \
-      && [ "$ACTIVE_REGULAR" = "$PFS_REGULAR_HASH" ] \
-      && [ "$ACTIVE_BOLD" = "$PFS_BOLD_HASH" ]; then
-      ACTIVE="$FONT_ID"
-      break
-    fi
-  done
-  if [ "$ACTIVE" = unknown ] && [ -d "$PFS_CUSTOM_DIR" ]; then
-    for CUSTOM_PATH in "$PFS_CUSTOM_DIR"/custom-*; do
-      [ -d "$CUSTOM_PATH" ] || continue
-      FONT_ID=${CUSTOM_PATH##*/}
-      if pfs_resolve_font "$FONT_ID" \
-        && [ "$ACTIVE_REGULAR" = "$PFS_REGULAR_HASH" ] \
-        && [ "$ACTIVE_BOLD" = "$PFS_BOLD_HASH" ]; then
-        ACTIVE="$FONT_ID"
-        break
+if [ -n "$SS" ] && [ -r "$PFS_PROC_ROOT/$SS/mountinfo" ]; then
+  BOUND_GENERATION=$(pfs_active_bind_generation "$SS" 2>/dev/null) || BOUND_GENERATION=""
+  CURRENT_SERVER=false
+  [ "$STATE_PID" = "$SS" ] && CURRENT_SERVER=true
+  case "$REDIRECT" in
+    verified)
+      if [ "$CURRENT_SERVER" = true ] && [ -n "$STATE_GENERATION" ]; then
+        ACTIVE=$(pfs_font_for_generation "$STATE_GENERATION" 2>/dev/null) || ACTIVE=unknown
+      elif [ "$CURRENT_SERVER" = false ] && [ -z "$BOUND_GENERATION" ]; then
+        # A restarted system_server without this module's bind serves stock.
+        ACTIVE=system-default
       fi
-    done
-  fi
+      ;;
+    bound)
+      if [ "$CURRENT_SERVER" = true ] && [ -n "$STATE_GENERATION" ]; then
+        case "$(pfs_served_map_state "$(pfs_pid_of com.android.systemui)" "$STATE_GENERATION")" in
+          served) ACTIVE=$(pfs_font_for_generation "$STATE_GENERATION" 2>/dev/null) || ACTIVE=unknown ;;
+          stock) ACTIVE=system-default ;;
+        esac
+      fi
+      ;;
+    inactive|guard-tripped|failed)
+      [ -n "$BOUND_GENERATION" ] || ACTIVE=system-default
+      ;;
+  esac
+  [ "$ACTIVE" = unknown ] || ACTIVE_SCOPE=font-service
 fi
 
-if [ "$ACTIVE" = unknown ] && [ "$SELECTED" = system-default ]; then
-  RESTART_REQUIRED=unknown
+if [ "$ACTIVE" = unknown ]; then
+  case "$REDIRECT" in
+    waiting|bound) RESTART_REQUIRED=unknown ;;
+    *) if [ "$SELECTED" = system-default ]; then RESTART_REQUIRED=unknown; else RESTART_REQUIRED=true; fi ;;
+  esac
 elif [ "$ACTIVE" = "$SELECTED" ]; then
   RESTART_REQUIRED=false
 else
   RESTART_REQUIRED=true
 fi
+
+if pfs_guard_tripped; then
+  BOOT_GUARD=tripped
+else
+  BOOT_GUARD=ok
+fi
+GENERATION=$(pfs_current_generation 2>/dev/null) || GENERATION=none
 
 FONTLOADER_DIR="$PFS_ADB_ROOT/modules/fontloader"
 FONTLOADER_UPDATE_DIR="$PFS_ADB_ROOT/modules_update/fontloader"
@@ -118,6 +108,9 @@ printf '%s\n' \
   "selected=$SELECTED" \
   "restart_required=$RESTART_REQUIRED" \
   "active_scope=$ACTIVE_SCOPE" \
+  "redirect=$REDIRECT" \
+  "generation=$GENERATION" \
+  "boot_guard=$BOOT_GUARD" \
   "fontloader=$FONTLOADER" \
   "layout=$LAYOUT" \
   "targets=$TARGETS"

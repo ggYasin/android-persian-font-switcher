@@ -21,16 +21,14 @@ manifest/custom-registry card selection
     → scripts/apply-font.sh <id>
     → shell syntax + bundled/custom membership validation
     → validate source paths and SHA-256
-    → stage all four Regular/Bold destinations
-    → create skip_mount fail-safe only after staging succeeds
-    → write transaction marker, preserve previous overlay/state, and cross storage barriers
-    → swap the module's system/fonts directory
-    → persist selected_font
-    → record committed phase and cross the payload/state storage barrier
-    → remove skip_mount only for a complete font overlay
-    → remove transaction backups
-    → compare effective mounted hashes with pending selection
-    → report reboot required
+    → stage a new /data/fonts/persian_font_switcher/gen/<N>/ with the four
+      stock-named copies (0644, system:system, font_data_file), or reuse the
+      current generation when it already holds this font
+    → build xml/<N>/ with patched copies of the ROM font XML pointing at
+      gen/<N> (staged, verified, renamed into place, then never modified)
+    → publish <N> as the current generation only after both verified
+    → persist selected_font and clear the boot guard
+    → report reboot (or Apply now) required
 ```
 
 The official KernelSU Next store is invoked as:
@@ -64,13 +62,46 @@ Stages created by this release carry a creation lease, become stale after 24 hou
 
 KernelSU replaces the entire module directory on update. The separate module-owned persistent directory is therefore necessary for imported binaries; `customize.sh` recreates preview copies after each update. Preview recovery is optional and non-fatal: no registry is a no-op, valid entries are copied, and invalid/unreadable entries remain untouched while a private quarantine diagnostic is written when possible. Preview synchronization uses its own retained advisory `flock`; fixed stage/backup paths bound crash residue and recover an interrupted preview swap. A live lock owner defers recovery instead of blocking installation, and the WebUI retries later. No chosen filename or display name is used as a path or shell argument.
 
-## Restart model
+## Activation model
 
-Applying changes only stages the next overlay atomically. Magic Mount-rs' live bind remains attached to the previous source object, and Android font maps/caches are initialized per process. crDroid's picker can restart SystemUI because it switches a preinstalled Runtime Resource Overlay selecting an already registered family; it does not replace or remount these font files. The module intentionally provides Reboot now or Later, not SystemUI-only or zygote-only shortcuts. It never refreshes mounts itself or edits an external mount provider.
+```text
+post-fs-data (before zygote)
+    → System Default: remove /data/fonts/persian_font_switcher, stop
+    → boot guard: skip if two previous activations never reached boot completion
+    → re-verify the selected font and restage/reuse its generation
+    → regenerate patched XML from the pristine ROM /system/etc/font_fallback.xml
+      and fonts.xml; only the four Arabic file names change, to
+      ../../data/fonts/persian_font_switcher/gen/<N>/<file>
+    → delete unused generations, start the detached watcher
+watcher (scripts/redirect-watcher.sh)
+    → poll for system_server every 100 ms
+    → require its mount namespace to differ from init's and zygote's
+    → note whether the font binder service is already published
+    → nsenter -t <system_server> -m mount -o bind xml/<N>/<xml> /system/etc/<xml>
+      (on top of any other mount; this module's binds are recognized by their
+      source root in mountinfo, and only those are ever unmounted)
+    → wait for system_server's own copy of the finished font map, then
+      unmount (the bind lives about 3 s, and is gone before apps start)
+    → stay resident with a 2 s liveness check; rebind a restarted system_server
+      the same way, and stop (tripping the boot guard) if it dies twice right
+      after a bind
+boot-completed (only once sys.boot_completed=1)
+    → SystemUI's received font map contains gen/<N>: verified
+    → map unreadable: trust system_server's own map, or else only a bind made
+      while the font service was unpublished in a system_server at most 3 s old
+    → otherwise: bind, `cmd font restart`, verify the dump, unbind, restart
+      SystemUI and the launcher, confirm the new SystemUI received gen/<N>, or
+      roll back to stock
+    → make sure no bind is left, clear the boot guard
+```
 
-## System Default
+FontManagerService serializes font file paths into the shared font map, and libhwui opens each path lazily in the app's own mount namespace. The patched paths resolve to a real `font_data_file` directory that AOSP policy already lets every app domain read (`allow appdomain font_data_file:file r_file_perms`). Apps therefore need no mount. `system_server`'s mount namespace is a slave of init's (`master:1`), so a bind created there does not propagate.
 
-System Default creates `skip_mount`, replaces the active selection with `system-default`, and removes the generated `system/fonts` directory. The WebUI and font assets remain available. After reboot, the mount provider skips this module and Android sees its original files.
+The bind must still be short-lived. NeoZygisk caches `system_server`'s live mount namespace as its "root" namespace and moves every app it does not hide (root-granted apps, apps outside its denylist, and the WebView zygote) into it before that app unshares. On device, such apps copied a persistent bind. FontManagerService reads the XML only while it builds the map, so the watcher unmounts as soon as `system_server` has mapped the finished map. Every rebuild (`cmd font restart` is synchronous) is likewise bracketed by bind and unbind. A scan of every process after boot finds no copy. The module never writes `/data/fonts/files` or `/data/fonts/config`, which FontManagerService manages and validates, and it never ships a `system/` payload for a metamodule to mount.
+
+`dumpsys font` re-parses the XML that `system_server` currently sees, so it is checked only while bound: it proves the patched configuration parses and resolves, but not which map was served. After the unbind it shows the stock paths again. The served map is checked directly instead: SystemUI keeps the shared-memory font map it received from FontManagerService mapped for its lifetime, and root can read it through `/proc/<pid>/map_files`. The map contains the font paths, so finding `gen/<N>/` there proves apps received the redirect.
+
+Apply now (`scripts/live-apply.sh`) binds the new generation, restarts the font service, verifies the dump, unbinds, restarts SystemUI and the launcher, and confirms the new SystemUI's map. System Default only rebuilds the map without a bind. Boot-completed repair, the watcher's rebuild, Apply, and Apply now share the same operation lock. Generations are only garbage-collected at the next boot, so running apps that lazily open an older generation never lose it.
 
 ## Adding layouts
 

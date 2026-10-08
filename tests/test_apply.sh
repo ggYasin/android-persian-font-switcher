@@ -6,102 +6,132 @@ PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 SANDBOX=$(mktemp -d)
 trap 'rm -rf -- "$SANDBOX"' EXIT HUP INT TERM
 
-mkdir -p "$SANDBOX/bin" "$SANDBOX/scripts" "$SANDBOX/webroot" "$SANDBOX/state" "$SANDBOX/system/fonts" "$SANDBOX/effective" "$SANDBOX/adb/modules"
-cp -R "$PROJECT_DIR/assets" "$SANDBOX/assets"
-cp "$PROJECT_DIR/scripts/apply-font.sh" "$PROJECT_DIR/scripts/get-status.sh" "$PROJECT_DIR/scripts/lib.sh" "$SANDBOX/scripts/"
-cp "$PROJECT_DIR/webroot/font-manifest.json" "$SANDBOX/webroot/"
-cp "$PROJECT_DIR/state/supported-targets" "$PROJECT_DIR/state/selected-font" "$SANDBOX/state/"
-cp "$PROJECT_DIR/system/fonts/"*.ttf "$SANDBOX/system/fonts/"
-cp "$PROJECT_DIR/system/fonts/"*.ttf "$SANDBOX/effective/"
-printf '%s\n' '#!/usr/bin/env sh' 'exit 0' >"$SANDBOX/bin/sync"
-chmod 0755 "$SANDBOX/bin/sync"
+. "$SCRIPT_DIR/redirect_fixture.sh"
+pfs_fixture_init "$SANDBOX"
 
 apply() {
-  PFS_MODULE_DIR="$SANDBOX" PFS_SKIP_KSU_CONFIG=1 PATH="$SANDBOX/bin:$PATH" \
-    sh "$SANDBOX/scripts/apply-font.sh" "$1"
+  pfs_fixture_env PFS_SKIP_KSU_CONFIG=1 sh "$MODULE/scripts/apply-font.sh" "$1"
 }
 
-assert_mapping() {
+status() {
+  pfs_fixture_env sh "$MODULE/scripts/get-status.sh"
+}
+
+assert_generation() {
   FONT_ID="$1"
-  cmp "$SANDBOX/assets/fonts/$FONT_ID/regular.ttf" "$SANDBOX/system/fonts/NotoNaskhArabicUI-Regular.ttf"
-  cmp "$SANDBOX/assets/fonts/$FONT_ID/regular.ttf" "$SANDBOX/system/fonts/NotoNaskhArabic-Regular.ttf"
-  cmp "$SANDBOX/assets/fonts/$FONT_ID/bold.ttf" "$SANDBOX/system/fonts/NotoNaskhArabicUI-Bold.ttf"
-  cmp "$SANDBOX/assets/fonts/$FONT_ID/bold.ttf" "$SANDBOX/system/fonts/NotoNaskhArabic-Bold.ttf"
-  [ ! -e "$SANDBOX/skip_mount" ]
+  GEN="$2"
+  for TARGET in NotoNaskhArabicUI-Regular.ttf NotoNaskhArabic-Regular.ttf; do
+    cmp "$MODULE/assets/fonts/$FONT_ID/regular.ttf" "$FONT_ROOT/gen/$GEN/$TARGET"
+  done
+  for TARGET in NotoNaskhArabicUI-Bold.ttf NotoNaskhArabic-Bold.ttf; do
+    cmp "$MODULE/assets/fonts/$FONT_ID/bold.ttf" "$FONT_ROOT/gen/$GEN/$TARGET"
+  done
+  [ "$(sed -n '1p' "$FONT_ROOT/generation")" = "$GEN" ]
+  for XML in font_fallback.xml fonts.xml; do
+    for TARGET in NotoNaskhArabicUI-Regular.ttf NotoNaskhArabicUI-Bold.ttf \
+      NotoNaskhArabic-Regular.ttf NotoNaskhArabic-Bold.ttf; do
+      grep -q "\.\./\.\.$FONT_ROOT/gen/$GEN/$TARGET" "$FONT_ROOT/xml/$GEN/$XML"
+    done
+    grep -q 'postScriptName="NotoNaskhArabic"' "$FONT_ROOT/xml/$GEN/$XML"
+    grep -q 'postScriptName="NotoNaskhArabicUI"' "$FONT_ROOT/xml/$GEN/$XML"
+  done
+  [ ! -e "$MODULE/system" ]
+  [ ! -e "$MODULE/skip_mount" ]
 }
 
+# Every bundled family stages four exact copies into a fresh generation and a
+# patched copy of both ROM font XML files.
+EXPECTED_GEN=0
 for FONT_ID in $(sed -n 's/.*"id": "\([a-z0-9_-]*\)".*/\1/p' "$PROJECT_DIR/webroot/font-manifest.json"); do
   [ "$FONT_ID" = system-default ] && continue
-  apply "$FONT_ID" | grep -q '^status=ok$'
-  assert_mapping "$FONT_ID"
+  EXPECTED_GEN=$((EXPECTED_GEN + 1))
+  RESULT=$(apply "$FONT_ID")
+  printf '%s\n' "$RESULT" | grep -q '^status=ok$'
+  printf '%s\n' "$RESULT" | grep -q "^generation=$EXPECTED_GEN$"
+  assert_generation "$FONT_ID" "$EXPECTED_GEN"
 done
 
-# Effective mounted hashes, not saved config, determine active vs pending.
+# Re-applying the staged font reuses its generation instead of copying again.
+LAST_FONT=ibm-plex-sans-arabic
+apply "$LAST_FONT" | grep -q "^generation=$EXPECTED_GEN$"
+assert_generation "$LAST_FONT" "$EXPECTED_GEN"
+
+# A previous generation is never rewritten while a new one is staged.
+VAZIR_GEN=$((EXPECTED_GEN + 1))
 apply vazirmatn >/dev/null
-cp "$SANDBOX/system/fonts/"*.ttf "$SANDBOX/effective/"
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+assert_generation vazirmatn "$VAZIR_GEN"
+cmp "$MODULE/assets/fonts/$LAST_FONT/regular.ttf" "$FONT_ROOT/gen/$EXPECTED_GEN/NotoNaskhArabicUI-Regular.ttf"
+# Its XML is immutable too: it still points only at its own generation.
+[ "$(grep -c "gen/$EXPECTED_GEN/NotoNaskhArabic" "$FONT_ROOT/xml/$EXPECTED_GEN/font_fallback.xml")" -eq 4 ]
+if grep -q "gen/$VAZIR_GEN/" "$FONT_ROOT/xml/$EXPECTED_GEN/font_fallback.xml"; then
+  echo "A published XML generation was rewritten" >&2
+  exit 1
+fi
+
+# Status: active comes from the verified redirect of the running system_server.
+pfs_fixture_system_server 400
+pfs_fixture_bind 400 font_fallback.xml "$VAZIR_GEN"
+pfs_fixture_bind 400 fonts.xml "$VAZIR_GEN"
+pfs_fixture_state state=verified mode=boot ss_pid=400 "generation=$VAZIR_GEN" font=vazirmatn
+STATUS=$(status)
 printf '%s\n' "$STATUS" | grep -q '^active=vazirmatn$'
 printf '%s\n' "$STATUS" | grep -q '^selected=vazirmatn$'
 printf '%s\n' "$STATUS" | grep -q '^restart_required=false$'
+printf '%s\n' "$STATUS" | grep -q '^active_scope=font-service$'
+printf '%s\n' "$STATUS" | grep -q '^redirect=verified$'
+printf '%s\n' "$STATUS" | grep -q "^generation=$VAZIR_GEN$"
+printf '%s\n' "$STATUS" | grep -q '^boot_guard=ok$'
 printf '%s\n' "$STATUS" | grep -q '^fontloader=not-detected$'
 
 apply estedad >/dev/null
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
+STATUS=$(status)
 printf '%s\n' "$STATUS" | grep -q '^active=vazirmatn$'
 printf '%s\n' "$STATUS" | grep -q '^selected=estedad$'
 printf '%s\n' "$STATUS" | grep -q '^restart_required=true$'
 
-cp "$SANDBOX/system/fonts/"*.ttf "$SANDBOX/effective/"
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
-printf '%s\n' "$STATUS" | grep -q '^active=estedad$'
-printf '%s\n' "$STATUS" | grep -q '^restart_required=false$'
-
-mkdir -p "$SANDBOX/adb/modules/fontloader"
-printf '%s\n' 'id=fontloader' >"$SANDBOX/adb/modules/fontloader/module.prop"
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
-printf '%s\n' "$STATUS" | grep -q '^fontloader=enabled$'
-: >"$SANDBOX/adb/modules/fontloader/disable"
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
-printf '%s\n' "$STATUS" | grep -q '^fontloader=disabled$'
-rm -f "$SANDBOX/adb/modules/fontloader/disable"
-: >"$SANDBOX/adb/modules/fontloader/remove"
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
-printf '%s\n' "$STATUS" | grep -q '^fontloader=pending-removal$'
-rm -rf "$SANDBOX/adb/modules/fontloader"
-mkdir -p "$SANDBOX/adb/modules_update/fontloader"
-printf '%s\n' 'id=fontloader' >"$SANDBOX/adb/modules_update/fontloader/module.prop"
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
-printf '%s\n' "$STATUS" | grep -q '^fontloader=pending-install$'
-mkdir -p "$SANDBOX/adb/modules/fontloader"
-printf '%s\n' 'id=fontloader' >"$SANDBOX/adb/modules/fontloader/module.prop"
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
-printf '%s\n' "$STATUS" | grep -q '^fontloader=pending-install-or-update$'
-
-# A stale KernelSU config must not override the module state committed with the
-# current overlay when a best-effort config update previously failed.
-mkdir -p "$SANDBOX/adb/ksu/bin"
-printf '%s\n' '#!/usr/bin/env sh' 'printf "%s\n" vazirmatn' >"$SANDBOX/adb/ksu/bin/ksud"
-chmod 0755 "$SANDBOX/adb/ksu/bin/ksud"
-STATE_SELECTION=$(PFS_MODULE_DIR="$SANDBOX" PFS_ADB_ROOT="$SANDBOX/adb" \
-  sh -c '. "$1"; pfs_read_selection' sh "$SANDBOX/scripts/lib.sh")
-[ "$STATE_SELECTION" = estedad ]
-
-printf '%s\n' '#!/usr/bin/env sh' 'exit 1' >"$SANDBOX/failing-nsenter"
-chmod 0755 "$SANDBOX/failing-nsenter"
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_NSENTER_BIN="$SANDBOX/failing-nsenter" sh "$SANDBOX/scripts/get-status.sh")
+# A bind that predates nothing (font service already published) is unverified.
+pfs_fixture_state state=bound ss_pid=400 "generation=$VAZIR_GEN" font=vazirmatn font_service_at_bind=present
+status | grep -q '^active=unknown$'
+# A record from a previous system_server is stale.
+pfs_fixture_state state=verified ss_pid=399 "generation=$VAZIR_GEN" font=vazirmatn
+status | grep -q '^active=unknown$'
+# No bind and an inactive record means stock fonts are served.
+pfs_fixture_unbind 400 font_fallback.xml
+pfs_fixture_unbind 400 fonts.xml
+pfs_fixture_state state=inactive reason=system-default
+status | grep -q '^active=system-default$'
+rm -f "$MODULE/runtime/redirect.state"
+STATUS=$(status)
 printf '%s\n' "$STATUS" | grep -q '^active=unknown$'
-printf '%s\n' "$STATUS" | grep -q '^active_scope=unavailable$'
+printf '%s\n' "$STATUS" | grep -q '^redirect=none$'
 
-BEFORE=$(sha256sum "$SANDBOX/system/fonts/"*.ttf)
+mkdir -p "$ADB/modules/fontloader"
+printf '%s\n' 'id=fontloader' >"$ADB/modules/fontloader/module.prop"
+status | grep -q '^fontloader=enabled$'
+: >"$ADB/modules/fontloader/disable"
+status | grep -q '^fontloader=disabled$'
+rm -f "$ADB/modules/fontloader/disable"
+: >"$ADB/modules/fontloader/remove"
+status | grep -q '^fontloader=pending-removal$'
+rm -rf "$ADB/modules/fontloader"
+mkdir -p "$ADB/modules_update/fontloader"
+printf '%s\n' 'id=fontloader' >"$ADB/modules_update/fontloader/module.prop"
+status | grep -q '^fontloader=pending-install$'
+mkdir -p "$ADB/modules/fontloader"
+printf '%s\n' 'id=fontloader' >"$ADB/modules/fontloader/module.prop"
+status | grep -q '^fontloader=pending-install-or-update$'
+rm -rf "$ADB/modules/fontloader" "$ADB/modules_update/fontloader"
+
+# A stale KernelSU config must not override the module state file.
+mkdir -p "$ADB/ksu/bin"
+printf '%s\n' '#!/usr/bin/env sh' 'printf "%s\n" vazirmatn' >"$ADB/ksu/bin/ksud"
+chmod 0755 "$ADB/ksu/bin/ksud"
+STATE_SELECTION=$(pfs_fixture_env sh -c '. "$1"; pfs_read_selection' sh "$MODULE/scripts/lib.sh")
+[ "$STATE_SELECTION" = estedad ]
+rm -rf "$ADB/ksu"
+
+# Unsafe IDs are rejected before anything is staged.
+BEFORE=$(find "$FONT_ROOT" -type f -exec sha256sum {} + | sort)
 if apply '../../escape' >/dev/null 2>&1; then
   echo "Path traversal ID was accepted" >&2
   exit 1
@@ -110,15 +140,15 @@ if apply 'sahel;touch-pwned' >/dev/null 2>&1; then
   echo "Shell metacharacter ID was accepted" >&2
   exit 1
 fi
-[ "$BEFORE" = "$(sha256sum "$SANDBOX/system/fonts/"*.ttf)" ]
+[ "$BEFORE" = "$(find "$FONT_ROOT" -type f -exec sha256sum {} + | sort)" ]
 
-# The retained regular lock file is advisory; a live kernel-held flock blocks a
-# second operation and is released automatically even if the holder is killed.
+# A live kernel-held flock blocks a second operation and is released
+# automatically even if the holder is killed.
 LOCK_READY="$SANDBOX/lock-ready"
 LOCK_GATE="$SANDBOX/lock-gate"
 mkfifo "$LOCK_GATE"
 (
-  exec 8>>"$SANDBOX/.apply-lock"
+  exec 8>>"$MODULE/.apply-lock"
   flock 8
   : >"$LOCK_READY"
   IFS= read -r _ <"$LOCK_GATE" || true
@@ -137,7 +167,7 @@ CRASH_LOCK_READY="$SANDBOX/crash-lock-ready"
 CRASH_LOCK_GATE="$SANDBOX/crash-lock-gate"
 mkfifo "$CRASH_LOCK_GATE"
 (
-  exec 8>>"$SANDBOX/.apply-lock"
+  exec 8>>"$MODULE/.apply-lock"
   flock 8
   : >"$CRASH_LOCK_READY"
   IFS= read -r _ <"$CRASH_LOCK_GATE" || true
@@ -149,153 +179,91 @@ wait "$CRASH_LOCK_HOLDER" 2>/dev/null || true
 apply vazirmatn | grep -q '^status=ok$'
 rm -f "$CRASH_LOCK_READY" "$CRASH_LOCK_GATE"
 
-# A non-regular lock path is an explicit capability error, never misreported as
-# another live operation and never followed outside the module directory.
-rm -f "$SANDBOX/.apply-lock"
+# A non-regular lock path is an explicit capability error and is never followed.
+rm -f "$MODULE/.apply-lock"
 printf '%s\n' preserve >"$SANDBOX/external-lock-target"
-ln -s "$SANDBOX/external-lock-target" "$SANDBOX/.apply-lock"
+ln -s "$SANDBOX/external-lock-target" "$MODULE/.apply-lock"
 UNSAFE_LOCK_RESULT=$(apply vazirmatn 2>&1 || true)
 printf '%s\n' "$UNSAFE_LOCK_RESULT" | grep -q '^code=lock-unavailable$'
 [ "$(sed -n '1p' "$SANDBOX/external-lock-target")" = preserve ]
-rm -f "$SANDBOX/.apply-lock"
+rm -f "$MODULE/.apply-lock"
 
-# An owner-identified dead directory lock from an older release is migrated to
-# the crash-safe retained flock file.
-rm -f "$SANDBOX/.apply-lock"
-mkdir "$SANDBOX/.apply-lock"
-printf '%s\n' 99999999 >"$SANDBOX/.apply-lock/pid"
+# An owner-identified dead directory lock from an older release is migrated.
+mkdir "$MODULE/.apply-lock"
+printf '%s\n' 99999999 >"$MODULE/.apply-lock/pid"
 STALE_RESULT=$(apply vazirmatn)
 printf '%s\n' "$STALE_RESULT" | grep -q '^status=ok$'
 printf '%s\n' "$STALE_RESULT" | grep -q '^recovered_stale_lock=1$'
-[ -f "$SANDBOX/.apply-lock" ]
+[ -f "$MODULE/.apply-lock" ]
 
-# If the old overlay rename fails, cleanup must leave all four working files in
-# place instead of confusing them with a newly installed overlay.
+# A state-write failure reports a distinct error and keeps the old selection.
 apply estedad >/dev/null
-BEFORE_BACKUP_FAILURE=$(sha256sum "$SANDBOX/system/fonts/"*.ttf)
-MV_SHIM_DIR="$SANDBOX/mv-shim"
-mkdir "$MV_SHIM_DIR"
-REAL_MV=$(command -v mv)
-printf '%s\n' \
-  '#!/usr/bin/env sh' \
-  'if [ "$#" -eq 2 ] && [ "$1" = "$PFS_FAIL_SOURCE" ] && [ "$2" = "$PFS_FAIL_TARGET" ]; then exit 70; fi' \
-  'exec "$PFS_REAL_MV" "$@"' >"$MV_SHIM_DIR/mv"
-chmod 0755 "$MV_SHIM_DIR/mv"
-BACKUP_FAILURE=$(PFS_MODULE_DIR="$SANDBOX" PFS_SKIP_KSU_CONFIG=1 \
-  PFS_FAIL_SOURCE="$SANDBOX/system/fonts" PFS_FAIL_TARGET="$SANDBOX/.font-backup" \
-  PFS_REAL_MV="$REAL_MV" PATH="$MV_SHIM_DIR:$PATH" \
-  sh "$SANDBOX/scripts/apply-font.sh" vazirmatn 2>&1 || true)
-printf '%s\n' "$BACKUP_FAILURE" | grep -q '^code=overlay-backup-failed$'
-[ "$BEFORE_BACKUP_FAILURE" = "$(sha256sum "$SANDBOX/system/fonts/"*.ttf)" ]
-[ -e "$SANDBOX/skip_mount" ]
-[ ! -e "$SANDBOX/.font-transaction" ]
-rm -f "$SANDBOX/skip_mount"
-
-# The fail-safe marker must cross a storage barrier before the working overlay
-# is moved. A failed barrier returns a distinct error and changes no font file.
-apply estedad >/dev/null
-BEFORE_BARRIER_FAILURE=$(sha256sum "$SANDBOX/system/fonts/"*.ttf)
-printf '%s\n' '#!/usr/bin/env sh' 'exit 70' >"$SANDBOX/bin/sync"
-BARRIER_FAILURE=$(apply vazirmatn 2>&1 || true)
-printf '%s\n' "$BARRIER_FAILURE" | grep -q '^code=durability-barrier-failed$'
-[ "$BEFORE_BARRIER_FAILURE" = "$(sha256sum "$SANDBOX/system/fonts/"*.ttf)" ]
-[ ! -e "$SANDBOX/.font-transaction" ]
-printf '%s\n' '#!/usr/bin/env sh' 'exit 0' >"$SANDBOX/bin/sync"
-rm -f "$SANDBOX/skip_mount"
-
-# Fixed backup paths cannot be dangling symlinks that redirect root writes.
-printf '%s\n' preserve >"$SANDBOX/external-backup-target"
-ln -s "$SANDBOX/external-backup-target" "$SANDBOX/.selection-backup"
-UNSAFE_BACKUP_RESULT=$(apply vazirmatn 2>&1 || true)
-printf '%s\n' "$UNSAFE_BACKUP_RESULT" | grep -q '^code=unsafe-transaction-state$'
-[ "$(sed -n '1p' "$SANDBOX/external-backup-target")" = preserve ]
-rm -f "$SANDBOX/.selection-backup"
-
-# A state-write failure must roll back all four files and retain skip_mount.
-apply estedad >/dev/null
-BEFORE_STATE_FAILURE=$(sha256sum "$SANDBOX/system/fonts/"*.ttf)
-rm "$SANDBOX/state/selected-font"
-mkdir "$SANDBOX/state/selected-font"
+rm "$MODULE/state/selected-font"
+mkdir "$MODULE/state/selected-font"
 STATE_FAILURE=$(apply vazirmatn 2>&1 || true)
 printf '%s\n' "$STATE_FAILURE" | grep -q '^code=state-write-failed$'
-[ "$BEFORE_STATE_FAILURE" = "$(sha256sum "$SANDBOX/system/fonts/"*.ttf)" ]
-[ -e "$SANDBOX/skip_mount" ]
-rmdir "$SANDBOX/state/selected-font"
-printf '%s\n' estedad >"$SANDBOX/state/selected-font"
-rm -f "$SANDBOX/skip_mount"
+rmdir "$MODULE/state/selected-font"
+printf '%s\n' estedad >"$MODULE/state/selected-font"
 
-apply system-default | grep -q '^status=ok$'
-[ -e "$SANDBOX/skip_mount" ]
-[ ! -d "$SANDBOX/system/fonts" ]
-[ "$(sed -n '1p' "$SANDBOX/state/selected-font")" = "system-default" ]
+# A corrupt bundled asset is rejected and stages nothing.
+GEN_BEFORE=$(sed -n '1p' "$FONT_ROOT/generation")
+cp "$MODULE/assets/fonts/sahel/regular.ttf" "$SANDBOX/sahel-regular.bak"
+printf '%s' broken >"$MODULE/assets/fonts/sahel/regular.ttf"
+CORRUPT=$(apply sahel 2>&1 || true)
+printf '%s\n' "$CORRUPT" | grep -q '^code=font-checksum-mismatch$'
+[ "$(sed -n '1p' "$FONT_ROOT/generation")" = "$GEN_BEFORE" ]
+[ "$(sed -n '1p' "$MODULE/state/selected-font")" = estedad ]
+cp "$SANDBOX/sahel-regular.bak" "$MODULE/assets/fonts/sahel/regular.ttf"
 
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
-printf '%s\n' "$STATUS" | grep -q '^active=estedad$'
-printf '%s\n' "$STATUS" | grep -q '^selected=system-default$'
-printf '%s\n' "$STATUS" | grep -q '^restart_required=true$'
+# A ROM XML that lacks a target, or was already redirected, fails closed
+# without changing the selection.
+cp "$SYSTEM/etc/font_fallback.xml" "$SANDBOX/font_fallback.xml.bak"
+sed -i 's/NotoNaskhArabic-Bold\.ttf/SomethingElse-Bold.ttf/' "$SYSTEM/etc/font_fallback.xml"
+GEN_BEFORE=$(sed -n '1p' "$FONT_ROOT/generation")
+MISSING=$(apply shabnam 2>&1 || true)
+printf '%s\n' "$MISSING" | grep -q '^code=redirect-prepare-failed$'
+[ "$(sed -n '1p' "$MODULE/state/selected-font")" = estedad ]
+# Nothing half-built is published.
+[ "$(sed -n '1p' "$FONT_ROOT/generation")" = "$GEN_BEFORE" ]
+[ ! -e "$FONT_ROOT/gen/$((GEN_BEFORE + 1))" ]
+[ ! -e "$FONT_ROOT/xml/$((GEN_BEFORE + 1))" ]
+cp "$FONT_ROOT/xml/$GEN_BEFORE/font_fallback.xml" "$SYSTEM/etc/font_fallback.xml"
+REPATCH=$(apply shabnam 2>&1 || true)
+printf '%s\n' "$REPATCH" | grep -q '^code=redirect-prepare-failed$'
+cp "$SANDBOX/font_fallback.xml.bak" "$SYSTEM/etc/font_fallback.xml"
 
-for TARGET in "$SANDBOX/effective/"*.ttf; do printf '%s' rom-default >"$TARGET"; done
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
-printf '%s\n' "$STATUS" | grep -q '^active=unknown$'
-printf '%s\n' "$STATUS" | grep -q '^selected=system-default$'
-printf '%s\n' "$STATUS" | grep -q '^restart_required=unknown$'
+# Applying a font re-arms activation after a tripped boot guard.
+printf '%s\n' 2 >"$MODULE/state/boot-guard"
+status | grep -q '^boot_guard=tripped$'
+apply shabnam | grep -q '^status=ok$'
+[ ! -e "$MODULE/state/boot-guard" ]
+status | grep -q '^boot_guard=ok$'
 
-apply estedad | grep -q '^status=ok$'
-assert_mapping estedad
+# System Default records the choice without staging anything new.
+GEN_BEFORE=$(sed -n '1p' "$FONT_ROOT/generation")
+SYSTEM_DEFAULT=$(apply system-default)
+printf '%s\n' "$SYSTEM_DEFAULT" | grep -q '^status=ok$'
+printf '%s\n' "$SYSTEM_DEFAULT" | grep -q '^generation=none$'
+[ "$(sed -n '1p' "$MODULE/state/selected-font")" = system-default ]
+[ "$(sed -n '1p' "$FONT_ROOT/generation")" = "$GEN_BEFORE" ]
+pfs_fixture_state state=inactive reason=system-default
+STATUS=$(status)
+printf '%s\n' "$STATUS" | grep -q '^active=system-default$'
+printf '%s\n' "$STATUS" | grep -q '^restart_required=false$'
 
-printf '%s\n' invalid-target.ttf >"$SANDBOX/state/supported-targets"
+# Installation mode only records a verified selection.
+RECORD_ONLY=$(pfs_fixture_env PFS_SKIP_KSU_CONFIG=1 PFS_SKIP_REDIRECT_STAGE=1 \
+  sh "$MODULE/scripts/apply-font.sh" gandom)
+printf '%s\n' "$RECORD_ONLY" | grep -q '^generation=none$'
+[ "$(sed -n '1p' "$FONT_ROOT/generation")" = "$GEN_BEFORE" ]
+[ "$(sed -n '1p' "$MODULE/state/selected-font")" = gandom ]
+
+printf '%s\n' invalid-target.ttf >"$MODULE/state/supported-targets"
 if apply vazirmatn >/dev/null 2>&1; then
   echo "Invalid target allowlist was accepted" >&2
   exit 1
 fi
-cp "$PROJECT_DIR/state/supported-targets" "$SANDBOX/state/supported-targets"
-
-# A power-loss-visible committed marker is trusted only after the selected
-# state and all four new overlay hashes verify. Otherwise the durable backup is
-# restored before any later operation proceeds.
-cp -R "$SANDBOX/system/fonts" "$SANDBOX/.font-backup"
-cp "$SANDBOX/state/selected-font" "$SANDBOX/.selection-backup"
-cp "$SANDBOX/assets/fonts/vazirmatn/regular.ttf" "$SANDBOX/system/fonts/NotoNaskhArabicUI-Regular.ttf"
-cp "$SANDBOX/assets/fonts/vazirmatn/regular.ttf" "$SANDBOX/system/fonts/NotoNaskhArabic-Regular.ttf"
-cp "$SANDBOX/assets/fonts/vazirmatn/bold.ttf" "$SANDBOX/system/fonts/NotoNaskhArabicUI-Bold.ttf"
-cp "$SANDBOX/assets/fonts/vazirmatn/bold.ttf" "$SANDBOX/system/fonts/NotoNaskhArabic-Bold.ttf"
-printf '%s' torn >"$SANDBOX/system/fonts/NotoNaskhArabicUI-Regular.ttf"
-printf '%s\n' vazirmatn >"$SANDBOX/state/selected-font"
-printf '%s\n' \
-  'phase=committed' \
-  'selection=vazirmatn' \
-  'had_overlay=1' \
-  'had_state=1' >"$SANDBOX/.font-transaction"
-
-printf '%s' broken >"$SANDBOX/assets/fonts/sahel/regular.ttf"
-# A failed durability barrier while downgrading an invalid committed marker
-# must leave both rollback backups and a retryable transaction in place.
-printf '%s\n' '#!/usr/bin/env sh' 'exit 70' >"$SANDBOX/bin/sync"
-RECOVERY_BARRIER_FAILURE=$(apply sahel 2>&1 || true)
-printf '%s\n' "$RECOVERY_BARRIER_FAILURE" | grep -q '^code=recovery-durability-failed$'
-[ -d "$SANDBOX/.font-backup" ]
-[ -f "$SANDBOX/.selection-backup" ]
-[ "$(sed -n 's/^phase=//p' "$SANDBOX/.font-transaction")" = prepared ]
-printf '%s\n' '#!/usr/bin/env sh' 'exit 0' >"$SANDBOX/bin/sync"
-if apply sahel >/dev/null 2>&1; then
-  echo "Corrupt font asset was accepted" >&2
-  exit 1
-fi
-cmp "$SANDBOX/assets/fonts/estedad/regular.ttf" "$SANDBOX/system/fonts/NotoNaskhArabicUI-Regular.ttf"
-cmp "$SANDBOX/assets/fonts/estedad/regular.ttf" "$SANDBOX/system/fonts/NotoNaskhArabic-Regular.ttf"
-cmp "$SANDBOX/assets/fonts/estedad/bold.ttf" "$SANDBOX/system/fonts/NotoNaskhArabicUI-Bold.ttf"
-cmp "$SANDBOX/assets/fonts/estedad/bold.ttf" "$SANDBOX/system/fonts/NotoNaskhArabic-Bold.ttf"
-[ -e "$SANDBOX/skip_mount" ]
-[ ! -e "$SANDBOX/.font-backup" ]
-[ ! -e "$SANDBOX/.selection-backup" ]
-[ ! -e "$SANDBOX/.font-transaction" ]
-[ "$(sed -n '1p' "$SANDBOX/state/selected-font")" = estedad ]
-
-STATUS=$(PFS_MODULE_DIR="$SANDBOX" PFS_DATA_DIR="$SANDBOX/data" PFS_ADB_ROOT="$SANDBOX/adb" \
-  PFS_EFFECTIVE_FONT_DIR="$SANDBOX/effective" sh "$SANDBOX/scripts/get-status.sh")
-printf '%s\n' "$STATUS" | grep -q '^selected=system-default$'
-printf '%s\n' "$STATUS" | grep -q '^layout=valid$'
+cp "$PROJECT_DIR/state/supported-targets" "$MODULE/state/supported-targets"
+status | grep -q '^layout=valid$'
 
 echo "Apply-script tests passed"

@@ -11,6 +11,7 @@ const SCRIPT_NAMES = new Set([
   "get-status.sh",
   "import-font.sh",
   "list-custom-fonts.sh",
+  "live-apply.sh",
   "reboot-device.sh",
 ]);
 const MAX_FONT_SIZE = 16 * 1024 * 1024;
@@ -46,6 +47,7 @@ const elements = {
   selectedFont: document.querySelector("#selected-font"),
   chosenFont: document.querySelector("#chosen-font"),
   fontloaderStatus: document.querySelector("#fontloader-status"),
+  redirectStatus: document.querySelector("#redirect-status"),
   fontloaderGuidance: document.querySelector("#fontloader-guidance"),
   layoutStatus: document.querySelector("#layout-status"),
   restartBadge: document.querySelector("#restart-badge"),
@@ -59,6 +61,7 @@ const elements = {
   refreshButton: document.querySelector("#refresh-button"),
   applyButton: document.querySelector("#apply-button"),
   rebootButton: document.querySelector("#reboot-button"),
+  liveApplyButton: document.querySelector("#live-apply-button"),
   laterButton: document.querySelector("#later-button"),
   customName: document.querySelector("#custom-name"),
   customRegular: document.querySelector("#custom-regular"),
@@ -474,6 +477,7 @@ function syncControls() {
   elements.importButton.disabled = !mutationsAllowed || !importSupported || !customRegistryReady || !currentPairValidated;
   elements.refreshButton.disabled = operationPending;
   elements.rebootButton.disabled = operationPending || !initialized;
+  elements.liveApplyButton.disabled = operationPending || !initialized || !layoutValid;
   const customInputsDisabled = operationPending || !importSupported || !customRegistryReady;
   elements.customName.disabled = customInputsDisabled;
   elements.customRegular.disabled = customInputsDisabled;
@@ -513,13 +517,13 @@ async function applyChosen() {
     await refreshStatus({ preserveChoice: true });
     if (selectedId === chosenId) {
       if (restartState === "true") {
-        showNotice("Font selected successfully. Reboot is required to rebuild overlays and process font maps.");
-        if (typeof window.ksu.toast === "function") window.ksu.toast("Font selected. Reboot required.");
+        showNotice("Font selected. Reboot (recommended) or use Apply now to rebuild Android's font map.");
+        if (typeof window.ksu.toast === "function") window.ksu.toast("Font selected. Reboot or Apply now.");
       } else if (restartState === "false") {
         showNotice("Selection now matches the active font. No restart is required.");
         if (typeof window.ksu.toast === "function") window.ksu.toast("Selection matches the active font.");
       } else {
-        showNotice("Font selected, but the active system mount could not be verified. Reboot before relying on the change, then refresh status.");
+        showNotice("Font selected, but the active font map could not be verified. Reboot before relying on the change, then refresh status.");
         if (typeof window.ksu.toast === "function") window.ksu.toast("Font selected; active state is unverified.");
       }
     } else if (applyError) {
@@ -837,13 +841,51 @@ function fontLoaderLabel(status) {
     "pending-install": "Pending install/reboot",
     "pending-install-or-update": "Pending install/update and reboot",
     "pending-removal": "Pending removal/reboot",
-    "not-detected": "Not detected — external/optional for hidden apps",
+    "not-detected": "Not detected (not needed)",
   })[status] || "Unknown";
+}
+
+function redirectLabel(status) {
+  if (status.boot_guard === "tripped") return "Paused after failed boots — apply a font to retry";
+  return ({
+    verified: "Active for all apps",
+    bound: "Active (verifying)",
+    waiting: "Starting…",
+    inactive: "Stock fonts",
+    "guard-tripped": "Paused after failed boots — apply a font to retry",
+    failed: "Failed — stock fonts kept",
+    none: "Takes effect after reboot",
+  })[status.redirect] || "Unknown";
+}
+
+async function liveApplyNow() {
+  if (operationPending || !initialized || !layoutValid) return;
+  if (!window.confirm("Apply the selected font now? SystemUI and the launcher restart; other open apps update when reopened.")) return;
+  operationPending = true;
+  updateDisplay();
+  showNotice("Applying to the running system…");
+  let liveError;
+  try {
+    const result = parseResult(await execModuleScript("live-apply.sh"));
+    if (result.status !== "ok") throw new Error(result.message || "Live apply failed.");
+  } catch (error) {
+    liveError = error;
+  } finally {
+    operationPending = false;
+  }
+  try {
+    await refreshStatus({ preserveChoice: true });
+  } catch (statusError) {
+    liveError = liveError || statusError;
+  }
+  if (liveError) showNotice(liveError.message || "Live apply failed; reboot to apply instead.", true);
+  else showNotice("Applied. Apps that were already open show the new font after they are reopened.");
+  updateDisplay();
 }
 
 async function rebootNow() {
   if (operationPending || !initialized) return;
-  if (!window.confirm("Reboot now to rebuild font mounts and Android font maps?")) return;
+  if (!window.confirm("Reboot now to rebuild Android's font map?")) return;
   operationPending = true;
   updateDisplay();
   showNotice("Reboot requested…");
@@ -868,9 +910,10 @@ async function refreshStatus({ preserveChoice = true, announce = false } = {}) {
   layoutValid = status.layout === "valid";
   elements.layoutStatus.textContent = layoutValid ? "Verified four-file AOSP layout" : "Invalid — reinstall required";
   elements.fontloaderStatus.textContent = fontLoaderLabel(status.fontloader);
-  elements.fontloaderGuidance.textContent = status.fontloader === "enabled"
-    ? "FontLoader is active. It remains an external module and helps apps that later lose module-font access through mount-namespace hiding."
-    : "On Android 12+, external FontLoader may be needed when hidden apps still see stock Noto fonts because fonts load lazily after their module mounts disappear.";
+  elements.redirectStatus.textContent = redirectLabel(status);
+  elements.fontloaderGuidance.textContent = status.fontloader === "enabled" || status.fontloader === "disabled"
+    ? "FontLoader is not needed by this module. Its in-memory font swap can crash apps when font sizes differ, so you can remove it."
+    : "Hidden apps receive the font without any mount, so FontLoader is not required.";
   if (restartState === "unknown") {
     elements.restartBadge.textContent = "Active verification unavailable";
     elements.restartBadge.classList.remove("hidden");
@@ -880,8 +923,9 @@ async function refreshStatus({ preserveChoice = true, announce = false } = {}) {
   }
   const warnings = [];
   if (!layoutValid) warnings.push("Saved ROM font layout is invalid. Reinstall before changing fonts.");
-  if (status.active_scope === "unavailable") warnings.push("The active system font could not be verified from Android's global mount namespace; selected state is shown separately.");
-  if (announce) showNotice(warnings.length ? warnings.join(" ") : "Status refreshed from the effective system mount.", !layoutValid);
+  if (status.boot_guard === "tripped" || status.redirect === "guard-tripped") warnings.push("Activation was paused because the device did not finish booting twice with it enabled. Apply a font again to retry.");
+  if (status.redirect === "failed") warnings.push("Activation failed this boot, so stock fonts were kept. Reboot, or apply again.");
+  if (announce) showNotice(warnings.length ? warnings.join(" ") : "Status refreshed from the running font service.", !layoutValid);
   updateDisplay();
   return { status, warnings };
 }
@@ -946,6 +990,7 @@ elements.search.addEventListener("input", filterCards);
 elements.applyButton.addEventListener("click", applyChosen);
 elements.refreshButton.addEventListener("click", refreshFromUi);
 elements.rebootButton.addEventListener("click", rebootNow);
+elements.liveApplyButton.addEventListener("click", liveApplyNow);
 elements.laterButton.addEventListener("click", () => elements.restartPanel.classList.add("hidden"));
 elements.importButton.addEventListener("click", importCustomFont);
 elements.customRegular.addEventListener("change", previewImport);

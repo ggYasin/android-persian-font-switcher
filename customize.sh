@@ -7,7 +7,7 @@ PFS_ADB_ROOT="${PFS_TEST_ADB_ROOT:-/data/adb}"
 FONT_CONFIG="$PFS_SYSTEM_ROOT/etc/fonts.xml"
 DEVICE_API="${API:-$(getprop ro.build.version.sdk 2>/dev/null)}"
 
-for REQUIRED_APPLET in awk base64 flock od sha256sum sync; do
+for REQUIRED_APPLET in awk base64 chcon chown cut flock grep mount nsenter od pidof readlink sed sha256sum sync; do
   command -v "$REQUIRED_APPLET" >/dev/null 2>&1 \
     || abort "Required Android command is unavailable: $REQUIRED_APPLET"
 done
@@ -38,6 +38,17 @@ check_conflict_dir() {
 
   if [ -e "$CONFLICT_DIR/system/.replace" ] || [ -e "$CONFLICT_DIR/system/fonts/.replace" ]; then
     abort "Enabled module '$CONFLICT_ID' replaces a parent of the Android font targets. Disable/remove it and reboot first."
+  fi
+
+  # The redirect patches the ROM's own font XML; another module overlaying it
+  # would make the patched base and the served file disagree.
+  for XML_NAME in font_fallback.xml fonts.xml; do
+    if [ -e "$CONFLICT_DIR/system/etc/$XML_NAME" ]; then
+      abort "Enabled module '$CONFLICT_ID' also overlays /system/etc/$XML_NAME. Disable/remove it and reboot first."
+    fi
+  done
+  if [ -e "$CONFLICT_DIR/system/etc/.replace" ]; then
+    abort "Enabled module '$CONFLICT_ID' replaces /system/etc, which holds the font configuration. Disable/remove it and reboot first."
   fi
 }
 
@@ -167,8 +178,17 @@ fi
 # KernelSU Next may extract ordinary payload scripts as 0644 regardless of the
 # ZIP's Unix mode. Normalize runtime modes now, but invoke the initial apply via
 # an explicit shell so installation never depends on extraction preserving +x.
-set_perm "$MODPATH/customize.sh" 0 0 0755
-set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755
+set_runtime_modes() {
+  for STAGE_SCRIPT in customize.sh post-fs-data.sh service.sh boot-completed.sh uninstall.sh; do
+    set_perm "$MODPATH/$STAGE_SCRIPT" 0 0 0755
+  done
+  set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755
+}
+set_runtime_modes
+
+# This release ships no system/ payload, so no mount provider ever mounts
+# anything for it. Remove a stale overlay or marker defensively.
+rm -rf "$MODPATH/system" "$MODPATH/skip_mount"
 
 # Recreate WebUI preview copies from the module-owned persistent custom-font
 # store. This is optional, best-effort update recovery: malformed/unreadable
@@ -189,7 +209,8 @@ if [ "$SYNC_STATUS" -ne 0 ]; then
 fi
 
 APPLY_LOG="$MODPATH/state/install-apply.log"
-if PFS_MODULE_DIR="$MODPATH" PFS_DATA_DIR="$PFS_DATA_DIR" PFS_SKIP_KSU_CONFIG=1 sh "$MODPATH/scripts/apply-font.sh" "$DESIRED_FONT" >"$APPLY_LOG" 2>&1; then
+if PFS_MODULE_DIR="$MODPATH" PFS_DATA_DIR="$PFS_DATA_DIR" PFS_SKIP_KSU_CONFIG=1 PFS_SKIP_REDIRECT_STAGE=1 \
+  sh "$MODPATH/scripts/apply-font.sh" "$DESIRED_FONT" >"$APPLY_LOG" 2>&1; then
   APPLY_STATUS=0
 else
   APPLY_STATUS=$?
@@ -202,20 +223,16 @@ done <"$APPLY_LOG"
 rm -f "$APPLY_LOG"
 
 if [ "$APPLY_STATUS" -ne 0 ]; then
-  abort "Failed to prepare the initial '$DESIRED_FONT' fallback overlay (exit $APPLY_STATUS). See the apply output above."
+  abort "Failed to record the initial '$DESIRED_FONT' font selection (exit $APPLY_STATUS). See the apply output above."
 fi
 
 # Reassert final installed modes after initialization. WebUI calls these
 # scripts directly at runtime, so they must be executable in the installed tree.
-set_perm "$MODPATH/customize.sh" 0 0 0755
-set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755
+set_runtime_modes
 set_perm_recursive "$MODPATH/assets" 0 0 0755 0644
 set_perm_recursive "$MODPATH/webroot" 0 0 0755 0644
 set_perm_recursive "$MODPATH/state" 0 0 0700 0600
-if [ -d "$MODPATH/system/fonts" ]; then
-  set_perm_recursive "$MODPATH/system/fonts" 0 0 0755 0644
-fi
 
 ui_print "Persian Font Switcher prepared for API $DEVICE_API."
 ui_print "Selected font: $DESIRED_FONT"
-ui_print "A compatible systemless mount provider is required; reboot to activate."
+ui_print "Reboot to activate. No module mounts are created in app or zygote namespaces."

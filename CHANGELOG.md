@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+- Replaced the `system/fonts` overlay with a mount-free redirect. The four Arabic fallback entries of the ROM's own `font_fallback.xml`/`fonts.xml` now point at verified copies under `/data/fonts/persian_font_switcher/gen/<N>/` (label `font_data_file`). The patched XML is bind-mounted only inside `system_server`'s private, slave mount namespace, so init, zygote, and apps never see a module mount.
+- Fixed the selected font not reaching, or crashing, apps whose module mounts are hidden by KernelSU/NeoZygisk unmount profiles. Those apps lost the font overlay and lazily mapped the stock Noto files. FontLoader's fixed-address swap to the smaller module font then failed with `EINVAL` after removing the old mapping, so the first Persian glyph caused `SIGSEGV`. FontLoader is no longer needed and the WebUI now recommends removing it.
+- Added `post-fs-data.sh`, `service.sh`, `boot-completed.sh`, and a resident watcher. Together they stage the selection each boot, bind before FontManagerService starts, rebind a restarted `system_server`, verify the served configuration, repair a late bind with one `cmd font restart` plus a SystemUI/launcher restart, and roll back to stock fonts if the patched configuration does not resolve.
+- Added a boot guard that pauses activation after two boots that did not complete, or when `system_server` dies twice shortly after a bind, until a font is applied again.
+- Verified activation against the font map SystemUI actually received (read from its shared memory), not just the parsed configuration.
+- Made each generation's XML immutable and recognized this module's binds by their source path, so other modules' mounts on `/system/etc` are never mistaken for, or removed as, this module's. The installer now refuses enabled modules that overlay the ROM font XML or replace `/system/etc`.
+- Made the bind transient: it is removed as soon as FontManagerService has built the font map (about 3 seconds at boot, around each rebuild otherwise). NeoZygisk moves apps it does not hide into a copy of `system_server`'s live mount namespace, and on device such apps had copied a persistent bind.
+- Fixed WebUI actions failing with `lock-unavailable` on managers that run scripts under mksh, which makes descriptors opened by `exec` close-on-exec so `flock` never saw the lock. Module scripts now re-exec under the root manager's BusyBox in standalone mode, the environment boot scripts use.
+- Added an optional **Apply now** action that activates a selection without rebooting.
+- Redefined **Active** as the font the font service served to apps this boot, and added activation, generation, and boot-guard status.
+- Installation now only records a verified selection. The module ships no `system/` payload and no `skip_mount` marker, needs no mount provider, and `uninstall.sh` removes the staged copies.
+- Added byte-exact XML patching, namespace-guard, watcher, boot-completed repair/rollback, boot-guard, and live-apply regressions with stubbed Android tools.
+
 ## 0.2.0-rc1
 
 - Preserved rc4's working four-target AOSP overlay, default Vazirmatn selection, mount-provider boundary, and reboot-only activation model.

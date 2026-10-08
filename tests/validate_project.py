@@ -36,12 +36,7 @@ FONT_IDS = (
     "noto-kufi-arabic",
     "ibm-plex-sans-arabic",
 )
-TARGETS = {
-    "NotoNaskhArabicUI-Regular.ttf": ("vazirmatn", "regular"),
-    "NotoNaskhArabicUI-Bold.ttf": ("vazirmatn", "bold"),
-    "NotoNaskhArabic-Regular.ttf": ("vazirmatn", "regular"),
-    "NotoNaskhArabic-Bold.ttf": ("vazirmatn", "bold"),
-}
+STAGE_SCRIPTS = ("customize.sh", "post-fs-data.sh", "service.sh", "boot-completed.sh", "uninstall.sh")
 REQUIRED_CODEPOINTS = {
     0x0621,
     0x0622,
@@ -116,6 +111,11 @@ def payload_files() -> list[str]:
             fail(f"Missing payload file: {relative}")
         if "iransans" in relative.lower():
             fail("Unlicensed IRANSans file appears in the release payload")
+        if path.parts[0] == "system" or relative == "skip_mount":
+            fail(f"Mount-free release must not ship a mountable system payload: {relative}")
+    for stage_script in STAGE_SCRIPTS:
+        if stage_script not in paths:
+            fail(f"Release payload omits stage script: {stage_script}")
     return paths
 
 
@@ -272,19 +272,22 @@ def manifest_and_fonts() -> dict:
     return manifest
 
 
-def initial_overlay() -> None:
-    for target, (font_id, weight) in TARGETS.items():
-        source = ROOT / f"assets/fonts/{font_id}/{weight}.ttf"
-        destination = ROOT / "system/fonts" / target
-        if source.read_bytes() != destination.read_bytes():
-            fail(f"Initial overlay mapping mismatch: {target}")
+def mount_free_layout() -> None:
+    if (ROOT / "system").exists():
+        fail("The source tree must not contain a mountable system/ directory")
+    lib = (ROOT / "scripts/lib.sh").read_text()
+    for marker in ("pfs_ss_isolated", "font_data_file", "mount -o bind", "/data/fonts/persian_font_switcher"):
+        if marker not in lib:
+            fail(f"Mount-free redirect helper is missing: {marker}")
+    if "/data/fonts/files" in lib or "/data/fonts/config" in lib:
+        fail("The module must never touch FontManagerService-managed /data/fonts/files or /data/fonts/config")
 
 
 def static_webui() -> None:
     html = (ROOT / "webroot/index.html").read_text()
     js = (ROOT / "webroot/app.js").read_text()
     css = (ROOT / "webroot/style.css").read_text()
-    for marker in ("font-list", "active-font", "selected-font", "font-search", "custom-regular", "custom-bold", "apply-button", "refresh-button", "layout-status", "role=\"radiogroup\"", "fontloader-status", "Content-Security-Policy"):
+    for marker in ("font-list", "active-font", "selected-font", "font-search", "custom-regular", "custom-bold", "apply-button", "refresh-button", "layout-status", "role=\"radiogroup\"", "fontloader-status", "redirect-status", "live-apply-button", "Content-Security-Policy"):
         if marker not in html:
             fail(f"Missing WebUI marker: {marker}")
     if re.search(r"https?://|(?:^|[\"'])//", html + js + css, re.MULTILINE):
@@ -292,7 +295,7 @@ def static_webui() -> None:
     for forbidden in ("eval(", "new function", "xmlhttprequest", "websocket", "ksu.spawn", "killall", "ctl.restart", "mount --bind"):
         if forbidden in js.lower():
             fail(f"Forbidden WebUI behavior: {forbidden}")
-    for marker in ("new FontFace", "IntersectionObserver", "fileOutputStream", "validateFontFile", "PfsFontValidator", "restart_required", "bridge-timeout", "delete-custom-font.sh", "refreshStatus"):
+    for marker in ("new FontFace", "IntersectionObserver", "fileOutputStream", "validateFontFile", "PfsFontValidator", "restart_required", "bridge-timeout", "delete-custom-font.sh", "live-apply.sh", "refreshStatus"):
         if marker not in js:
             fail(f"Missing WebUI feature: {marker}")
     if "SAFE_ID" not in js or "optionFor(args[0])" not in js:
@@ -300,10 +303,14 @@ def static_webui() -> None:
 
 
 def syntax_and_modes() -> None:
-    shell_files = [ROOT / "customize.sh", *sorted((ROOT / "scripts").glob("*.sh")), *sorted((ROOT / "tests").glob("*.sh"))]
+    stage_files = [ROOT / name for name in STAGE_SCRIPTS]
+    shell_files = [*stage_files, *sorted((ROOT / "scripts").glob("*.sh")), *sorted((ROOT / "tests").glob("*.sh"))]
     for script in shell_files:
         subprocess.run(["sh", "-n", str(script)], check=True)
-        if script.parent.name == "scripts" and script.name not in {"build.sh", "validate.sh"} and not os.access(script, os.X_OK):
+        runtime_script = script in stage_files or (
+            script.parent.name == "scripts" and script.name not in {"build.sh", "validate.sh"}
+        )
+        if runtime_script and not os.access(script, os.X_OK):
             fail(f"Runtime script is not executable: {script.relative_to(ROOT)}")
     node = shutil.which("node")
     if not node:
@@ -336,7 +343,7 @@ def archive_validation(archive_path: Path, expected: list[str]) -> None:
             mode = stat.S_IMODE(info.external_attr >> 16)
             expected_mode = (
                 0o755
-                if name == "customize.sh" or (name.startswith("scripts/") and name.endswith(".sh"))
+                if name in STAGE_SCRIPTS or (name.startswith("scripts/") and name.endswith(".sh"))
                 else 0o600
                 if name.startswith("state/")
                 else 0o644
@@ -371,7 +378,7 @@ def main() -> int:
     module = module_properties()
     update_metadata(module)
     manifest_and_fonts()
-    initial_overlay()
+    mount_free_layout()
     static_webui()
     syntax_and_modes()
     if args.archive is not None:

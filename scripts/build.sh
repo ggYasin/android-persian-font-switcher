@@ -32,7 +32,8 @@ done <"$FILE_LIST"
 
 find "$STAGE" -type d -exec chmod 0755 {} +
 find "$STAGE" -type f -exec chmod 0644 {} +
-chmod 0755 "$STAGE/customize.sh" "$STAGE/scripts/"*.sh
+chmod 0755 "$STAGE/customize.sh" "$STAGE/post-fs-data.sh" "$STAGE/service.sh" \
+  "$STAGE/boot-completed.sh" "$STAGE/uninstall.sh" "$STAGE/scripts/"*.sh
 chmod 0600 "$STAGE/state/"*
 find "$STAGE" -exec touch -t 202401010000 {} +
 
